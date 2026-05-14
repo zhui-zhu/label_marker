@@ -76,6 +76,7 @@ class GLRenderer {
             uniform float u_sfreq;
             uniform float u_time_offset;
             uniform float u_sensitivity;
+            uniform float u_y_offset;
 
             in float a_sample;
 
@@ -85,9 +86,13 @@ class GLRenderer {
                 float t = float(gl_VertexID) / u_sfreq + u_time_offset;
                 float x = (t - u_viewport_range.x) / (u_viewport_range.y - u_viewport_range.x);
 
-                float channel_height = 1.0 / u_channel_count;
-                float channel_center = 1.0 - (u_channel_index + 0.5) * channel_height;
-                float y = channel_center + a_sample * channel_height * 0.45 * u_sensitivity;
+                float raw_h = 1.0 / u_channel_count;
+                float amp = raw_h * 0.45 * u_sensitivity;
+                float pad = min(amp, 0.02);
+                float usable = 1.0 - 2.0 * pad;
+                float ch = usable / u_channel_count;
+                float channel_center = (1.0 - pad) - (u_channel_index + 0.5) * ch;
+                float y = channel_center + a_sample * ch * 0.45 * u_sensitivity + u_y_offset;
 
                 v_pos = vec2(x, y);
                 gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
@@ -117,6 +122,7 @@ class GLRenderer {
         this.uTimeOffset = gl.getUniformLocation(this.waveProgram, 'u_time_offset');
         this.uColor = gl.getUniformLocation(this.waveProgram, 'u_color');
         this.uSensitivity = gl.getUniformLocation(this.waveProgram, 'u_sensitivity');
+        this.uYOffset = gl.getUniformLocation(this.waveProgram, 'u_y_offset');
 
         const gridVS = `#version 300 es
             precision highp float;
@@ -143,8 +149,11 @@ class GLRenderer {
         const annoVS = `#version 300 es
             precision highp float;
             in vec2 a_pos;
+            uniform vec2 u_viewport_range;
             void main() {
-                gl_Position = vec4(a_pos, 0.0, 1.0);
+                float x = (a_pos.x - u_viewport_range.x) /
+                          (u_viewport_range.y - u_viewport_range.x) * 2.0 - 1.0;
+                gl_Position = vec4(x, a_pos.y, 0.0, 1.0);
             }
         `;
 
@@ -161,6 +170,7 @@ class GLRenderer {
         const annoFSCompiled = this._compileShader(gl.FRAGMENT_SHADER, annoFS);
         this.annoProgram = this._linkProgram(annoVSCompiled, annoFSCompiled);
         this.uAnnoColor = gl.getUniformLocation(this.annoProgram, 'u_anno_color');
+        this.uAnnoViewportRange = gl.getUniformLocation(this.annoProgram, 'u_viewport_range');
     }
 
     _initQuad() {
@@ -357,7 +367,8 @@ class GLRenderer {
     setAnnotations(annotations) {
         const gl = this.gl;
         const fillVerts = [];
-        const lineVerts = [];
+        const bandVerts = [];
+        const bandH = 0.04;
 
         for (const ann of annotations) {
             const x1 = ann.start;
@@ -366,23 +377,36 @@ class GLRenderer {
                 x1, -1, x2, -1, x1, 1,
                 x1, 1, x2, -1, x2, 1
             );
-            lineVerts.push(
-                x1, -1, x1, 1,
-                x2, -1, x2, 1
+            bandVerts.push(
+                x1, -1, x2, -1, x1, -1 + bandH,
+                x1, -1 + bandH, x2, -1, x2, -1 + bandH,
+                x1, 1 - bandH, x2, 1 - bandH, x1, 1,
+                x1, 1, x2, 1 - bandH, x2, 1
             );
         }
 
+        this.annoFillCount = fillVerts.length / 2;
+        this.annoBandCount = bandVerts.length / 2;
+
+        if (this.annoFillCount === 0 && this.annoBandCount === 0) {
+            gl.bindVertexArray(this.annoVAO);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.annoVBO);
+            gl.bufferData(gl.ARRAY_BUFFER, 4, gl.DYNAMIC_DRAW);
+            gl.bindVertexArray(null);
+            return;
+        }
+
+        const allVerts = fillVerts.concat(bandVerts);
+        const vertData = new Float32Array(allVerts);
+
         gl.bindVertexArray(this.annoVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.annoVBO);
-        const allVerts = fillVerts.concat(lineVerts);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(allVerts), gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, vertData, gl.DYNAMIC_DRAW);
 
         const posLoc = gl.getAttribLocation(this.annoProgram, 'a_pos');
         gl.enableVertexAttribArray(posLoc);
         gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-        this.annoFillCount = fillVerts.length / 2;
-        this.annoLineCount = lineVerts.length / 2;
         gl.bindVertexArray(null);
     }
 
@@ -391,7 +415,13 @@ class GLRenderer {
         const rect = this.canvas.getBoundingClientRect();
         const y = (mouseY - rect.top) / rect.height;
         const channelCount = this.channels.length;
-        const channelIndex = Math.floor(y * channelCount);
+        const rawH = 1.0 / channelCount;
+        const ampVal = rawH * 0.45 * this.sensitivity;
+        const padClamped = Math.min(ampVal, 0.02);
+        const usable = 1.0 - 2.0 * padClamped;
+        const ch = usable / channelCount;
+        const relY = (y - padClamped) / ch;
+        const channelIndex = Math.floor(relY);
         if (channelIndex < 0 || channelIndex >= channelCount) return null;
         return this.channels[channelIndex].name;
     }
@@ -402,7 +432,12 @@ class GLRenderer {
         const x = (mouseX - rect.left) / rect.width;
         const y = (mouseY - rect.top) / rect.height;
         const channelCount = this.channels.length;
-        const channelIndex = Math.floor(y * channelCount);
+        const rawH = 1.0 / channelCount;
+        const ampVal = rawH * 0.45 * this.sensitivity;
+        const padClamped = Math.min(ampVal, 0.02);
+        const usable = 1.0 - 2.0 * padClamped;
+        const ch = usable / channelCount;
+        const channelIndex = Math.floor((y - padClamped) / ch);
         if (channelIndex < 0 || channelIndex >= channelCount) return null;
 
         const time = this.viewportStart + x * (this.viewportEnd - this.viewportStart);
@@ -425,9 +460,8 @@ class GLRenderer {
         gl.getBufferSubData(gl.ARRAY_BUFFER, sampleIndex * 4, tempBuf, 0, 1);
 
         const sampleVal = tempBuf[0];
-        const channelHeight = 1.0 / channelCount;
-        const channelCenter = 1.0 - (channelIndex + 0.5) * channelHeight;
-        const waveY = channelCenter + sampleVal * channelHeight * 0.45 * this.sensitivity;
+        const channelCenter = (1.0 - padClamped) - (channelIndex + 0.5) * ch;
+        const waveY = channelCenter + sampleVal * ch * 0.45 * this.sensitivity;
 
         return {
             channelName: this.channels[channelIndex].name,
@@ -456,8 +490,8 @@ class GLRenderer {
         gl.scissor(0, 0, this.canvas.width, this.canvas.height);
 
         this._renderGrid();
-        this._renderAnnotations();
         this._renderWaveforms();
+        this._renderAnnotations();
 
         gl.disable(gl.SCISSOR_TEST);
     }
@@ -483,9 +517,17 @@ class GLRenderer {
         }
 
         const channelCount = this.channels.length;
-        for (let i = 1; i < channelCount; i++) {
-            const y = 1 - (i / channelCount) * 2;
-            lines.push(-1, y, 1, y);
+        if (channelCount > 0) {
+            const rawH = 1.0 / channelCount;
+            const ampVal = rawH * 0.45 * this.sensitivity;
+            const padClamped = Math.min(ampVal, 0.02);
+            const usable = 1.0 - 2.0 * padClamped;
+            const ch = usable / channelCount;
+            for (let i = 1; i < channelCount; i++) {
+                const yNorm = (1.0 - padClamped) - i * ch;
+                const y = yNorm * 2 - 1;
+                lines.push(-1, y, 1, y);
+            }
         }
 
         if (lines.length === 0) return;
@@ -511,47 +553,29 @@ class GLRenderer {
 
     _renderAnnotations() {
         if ((!this.annoFillCount || this.annoFillCount === 0) &&
-            (!this.annoLineCount || this.annoLineCount === 0)) return;
+            (!this.annoBandCount || this.annoBandCount === 0)) return;
 
         const gl = this.gl;
-        const range = this.viewportEnd - this.viewportStart;
 
         gl.useProgram(this.annoProgram);
+        gl.uniform2f(this.uAnnoViewportRange, this.viewportStart, this.viewportEnd);
 
         gl.bindVertexArray(this.annoVAO);
-
-        const totalVerts = this.annoFillCount + this.annoLineCount;
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.annoVBO);
-        const rawData = new Float32Array(totalVerts * 2);
-        gl.getBufferSubData(gl.ARRAY_BUFFER, 0, rawData);
-
-        const transformedData = [];
-        for (let i = 0; i < rawData.length; i += 2) {
-            const x = (rawData[i] - this.viewportStart) / range * 2 - 1;
-            transformedData.push(x, rawData[i + 1]);
-        }
-
-        const tempVBO = gl.createBuffer();
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(transformedData), gl.DYNAMIC_DRAW);
-        const posLoc = gl.getAttribLocation(this.annoProgram, 'a_pos');
-        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
         if (this.annoFillCount > 0) {
-            gl.uniform4f(this.uAnnoColor, 0.9, 0.3, 0.2, 0.12);
+            gl.uniform4f(this.uAnnoColor, 1.0, 0.4, 0.3, 0.25);
             gl.drawArrays(gl.TRIANGLES, 0, this.annoFillCount);
         }
 
-        if (this.annoLineCount > 0) {
-            gl.uniform4f(this.uAnnoColor, 0.9, 0.3, 0.2, 0.8);
-            gl.drawArrays(gl.LINES, this.annoFillCount, this.annoLineCount);
+        if (this.annoBandCount > 0) {
+            gl.uniform4f(this.uAnnoColor, 1.0, 0.4, 0.3, 0.9);
+            gl.drawArrays(gl.TRIANGLES, this.annoFillCount, this.annoBandCount);
         }
 
         gl.disable(gl.BLEND);
-
-        gl.deleteBuffer(tempVBO);
         gl.bindVertexArray(null);
     }
 
@@ -583,10 +607,15 @@ class GLRenderer {
 
         for (let i = 0; i < channelCount; i++) {
             gl.uniform1f(this.uChannelIndex, i);
-            gl.uniform1f(this.uTimeOffset, 0);
 
+            const isSelected = this.channels[i].name === this.selectedChannel;
             const color = colors[i % colors.length];
-            gl.uniform4f(this.uColor, color[0], color[1], color[2], 1.0);
+
+            if (isSelected) {
+                gl.uniform4f(this.uColor, color[0], color[1], color[2], 1.0);
+            } else {
+                gl.uniform4f(this.uColor, color[0] * 0.6, color[1] * 0.6, color[2] * 0.6, 1.0);
+            }
 
             const vbo = this.channelVBOs[i];
             const totalSamples = this.channelSampleCounts[i];
@@ -597,6 +626,8 @@ class GLRenderer {
 
             if (sampleCount <= 0) continue;
 
+            gl.uniform1f(this.uTimeOffset, startSample / this.sfreq);
+
             const vao = gl.createVertexArray();
             gl.bindVertexArray(vao);
 
@@ -605,17 +636,25 @@ class GLRenderer {
             gl.enableVertexAttribArray(posLoc);
             gl.vertexAttribPointer(posLoc, 1, gl.FLOAT, false, 0, startSample * 4);
 
-            if (samplesPerPixel > 2) {
-                const numSegments = Math.ceil(pixelWidth);
-                const samplesPerSegment = Math.ceil(sampleCount / numSegments);
-                for (let s = 0; s < numSegments; s++) {
-                    const segStart = s * samplesPerSegment;
-                    const segCount = Math.min(samplesPerSegment, sampleCount - segStart);
-                    if (segCount <= 0) break;
-                    gl.drawArrays(gl.LINE_STRIP, segStart, segCount);
+            const offsets = isSelected
+                ? [-0.0004, 0, 0.0004]
+                : [0];
+
+            for (const off of offsets) {
+                gl.uniform1f(this.uYOffset, off);
+
+                if (samplesPerPixel > 2) {
+                    const numSegments = Math.ceil(pixelWidth);
+                    const samplesPerSegment = Math.ceil(sampleCount / numSegments);
+                    for (let s = 0; s < numSegments; s++) {
+                        const segStart = s * samplesPerSegment;
+                        const segCount = Math.min(samplesPerSegment, sampleCount - segStart);
+                        if (segCount <= 0) break;
+                        gl.drawArrays(gl.LINE_STRIP, segStart, segCount);
+                    }
+                } else {
+                    gl.drawArrays(gl.LINE_STRIP, 0, sampleCount);
                 }
-            } else {
-                gl.drawArrays(gl.LINE_STRIP, 0, sampleCount);
             }
 
             gl.deleteVertexArray(vao);

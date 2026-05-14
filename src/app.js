@@ -133,10 +133,6 @@ class App {
             if (e.button === 1) e.preventDefault();
         });
 
-        document.getElementById('waveform-canvas').addEventListener('dblclick', (e) => {
-            this._handleCanvasDoubleClick(e);
-        });
-
         document.getElementById('waveform-canvas').addEventListener('mousemove', (e) => {
             this._handleCanvasMouseMove(e);
         });
@@ -237,7 +233,8 @@ class App {
         const canvasRect = document.getElementById('waveform-canvas').getBoundingClientRect();
         const mouseNormY = 1.0 - (e.clientY - canvasRect.top) / canvasRect.height;
         const dist = Math.abs(mouseNormY - info.waveY);
-        const threshold = 0.02;
+        const channelHeight = 1.0 / this.channels.length;
+        const threshold = Math.max(channelHeight * 0.4, 0.02);
         if (dist > threshold) {
             this._hideTooltip();
             return;
@@ -871,7 +868,16 @@ class App {
 
         const containerHeight = container.clientHeight;
         const channelCount = channels.length;
-        const channelHeight = containerHeight / channelCount;
+
+        const rawH = 1.0 / channelCount;
+        const ampVal = rawH * 0.45 * this.renderer.sensitivity;
+        const padClamped = Math.min(ampVal, 0.02);
+        const padPx = Math.round(padClamped * containerHeight);
+        const usablePx = containerHeight - 2 * padPx;
+        const channelHeight = usablePx / channelCount;
+
+        container.style.paddingTop = '0';
+        container.style.paddingBottom = '0';
 
         const minFontSize = 6;
         const maxFontSize = 14;
@@ -897,6 +903,11 @@ class App {
         const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
         container.style.width = labelWidth + 'px';
 
+        const topSpacer = document.createElement('div');
+        topSpacer.style.height = padPx + 'px';
+        topSpacer.style.flexShrink = '0';
+        container.appendChild(topSpacer);
+
         for (let i = 0; i < channelCount; i++) {
             const ch = channels[i];
             const div = document.createElement('div');
@@ -920,6 +931,11 @@ class App {
             });
             container.appendChild(div);
         }
+
+        const bottomSpacer = document.createElement('div');
+        bottomSpacer.style.height = padPx + 'px';
+        bottomSpacer.style.flexShrink = '0';
+        container.appendChild(bottomSpacer);
     }
 
     _updateTimeDisplay(start, end) {
@@ -1018,6 +1034,8 @@ class App {
 
         if (channelName) {
             this._selectAnnoChannel(channelName);
+            this.renderer.setSelectedChannel(channelName);
+            this.renderer.render();
             this._setStatus(`已选中通道: ${channelName}`, 'info');
         }
 
@@ -1086,9 +1104,8 @@ class App {
 
     _handleCanvasRightClick(e) {
         if (!this.edfData) return;
-        if (!this.annotationMode) return;
 
-        if (this.annoStart !== null) {
+        if (this.annotationMode && this.annoStart !== null) {
             this.annoStart = null;
             this.annoStartTime = null;
             this.annoEndTime = null;
@@ -1096,10 +1113,14 @@ class App {
             document.getElementById('anno-end').value = '';
             this._setStatus('已取消标注选择', 'info');
             this._updateStepUI();
-        } else {
+        } else if (this.annotationMode) {
             this.annotationMode = false;
             this._updateAnnoModeButton();
             this._setStatus('已退出标注模式', 'info');
+        } else {
+            this.renderer.setSelectedChannel(null);
+            this.renderer.render();
+            this._setStatus('已取消通道选中', 'info');
         }
     }
 
@@ -1116,52 +1137,6 @@ class App {
         this.renderer.setSelectedChannel(channelName);
         this.renderer.render();
         this._updateChannelLabels();
-    }
-
-    _handleCanvasDoubleClick(e) {
-        if (!this.edfData) return;
-
-        const time = this.renderer.getTimeAtMouse(e.clientX);
-        const channelName = this.renderer.getChannelAtMouse(e.clientY);
-
-        if (channelName) {
-            this._selectAnnoChannel(channelName);
-        }
-
-        if (this.annoStart === null) {
-            this.annoStart = time;
-            this.annoStartTime = time;
-            this.annoEndTime = null;
-            document.getElementById('anno-start').value = this._formatTime(time);
-            if (!this.annoPanelVisible) this._showAnnoPanel();
-            this._setStatus(
-                `起点: ${this._formatTime(time)} — 再次中键点击设置终点`,
-                'info'
-            );
-        } else {
-            const start = Math.min(this.annoStart, time);
-            const end = Math.max(this.annoStart, time);
-            const channel = document.getElementById('anno-channel').value || '';
-            const label = document.getElementById('anno-label').value || '发作';
-            this.annotations.push({ start, end, label, channel });
-            this.annoStart = null;
-            this.annoStartTime = start;
-            this.annoEndTime = end;
-            this.annotationMode = false;
-            this._updateAnnoModeButton();
-            document.getElementById('anno-start').value = this._formatTime(start);
-            document.getElementById('anno-end').value = this._formatTime(end);
-            this._updateAnnotationsList();
-            this.renderer.setAnnotations(this.annotations);
-            this.renderer.render();
-            this._setStatus(
-                `已添加标注: ${this._formatTime(start)} - ${this._formatTime(end)} [${label}]` +
-                (channel ? ` 通道: ${channel}` : ''),
-                'success'
-            );
-        }
-
-        this._updateStepUI();
     }
 
     _addAnnotation() {
