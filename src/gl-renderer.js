@@ -217,6 +217,15 @@ class GLRenderer {
         const gl = this.gl;
         this.annoVAO = gl.createVertexArray();
         this.annoVBO = gl.createBuffer();
+        this.annoGroups = {};
+        this.LABEL_COLORS = {
+            'lvfa':        [0.2, 0.6, 1.0],
+            'pre-ictal':   [1.0, 0.85, 0.2],
+            'inter-ictal': [0.3, 0.85, 0.3],
+            'ictal':       [1.0, 0.4, 0.3],
+            'post-ictal':  [0.7, 0.4, 1.0],
+            'other':       [0.6, 0.6, 0.6],
+        };
     }
 
     _setupInteraction() {
@@ -400,18 +409,22 @@ class GLRenderer {
 
     setAnnotations(annotations) {
         const gl = this.gl;
-        const fillVerts = [];
-        const bandVerts = [];
+        const groups = {};
         const bandH = 0.04;
 
         for (const ann of annotations) {
+            const label = ann.label || 'other';
+            if (!groups[label]) {
+                groups[label] = { fillVerts: [], bandVerts: [] };
+            }
+            const g = groups[label];
             const x1 = ann.start;
             const x2 = ann.end;
-            fillVerts.push(
+            g.fillVerts.push(
                 x1, -1, x2, -1, x1, 1,
                 x1, 1, x2, -1, x2, 1
             );
-            bandVerts.push(
+            g.bandVerts.push(
                 x1, -1, x2, -1, x1, -1 + bandH,
                 x1, -1 + bandH, x2, -1, x2, -1 + bandH,
                 x1, 1 - bandH, x2, 1 - bandH, x1, 1,
@@ -419,10 +432,24 @@ class GLRenderer {
             );
         }
 
-        this.annoFillCount = fillVerts.length / 2;
-        this.annoBandCount = bandVerts.length / 2;
+        this.annoGroups = {};
+        let totalVerts = 0;
 
-        if (this.annoFillCount === 0 && this.annoBandCount === 0) {
+        for (const [label, g] of Object.entries(groups)) {
+            const fillCount = g.fillVerts.length / 2;
+            const bandCount = g.bandVerts.length / 2;
+            const allVerts = g.fillVerts.concat(g.bandVerts);
+            const vertData = new Float32Array(allVerts);
+            totalVerts += vertData.length;
+
+            this.annoGroups[label] = {
+                fillCount,
+                bandCount,
+                offset: 0,
+            };
+        }
+
+        if (totalVerts === 0) {
             gl.bindVertexArray(this.annoVAO);
             gl.bindBuffer(gl.ARRAY_BUFFER, this.annoVBO);
             gl.bufferData(gl.ARRAY_BUFFER, 4, gl.DYNAMIC_DRAW);
@@ -430,12 +457,21 @@ class GLRenderer {
             return;
         }
 
-        const allVerts = fillVerts.concat(bandVerts);
-        const vertData = new Float32Array(allVerts);
+        const merged = new Float32Array(totalVerts);
+        let vertOffset = 0;
+        for (const [label, g] of Object.entries(groups)) {
+            const fillData = new Float32Array(g.fillVerts);
+            const bandData = new Float32Array(g.bandVerts);
+            this.annoGroups[label].offset = vertOffset / 2;
+            merged.set(fillData, vertOffset);
+            vertOffset += fillData.length;
+            merged.set(bandData, vertOffset);
+            vertOffset += bandData.length;
+        }
 
         gl.bindVertexArray(this.annoVAO);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.annoVBO);
-        gl.bufferData(gl.ARRAY_BUFFER, vertData, gl.DYNAMIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, merged, gl.DYNAMIC_DRAW);
 
         const posLoc = gl.getAttribLocation(this.annoProgram, 'a_pos');
         gl.enableVertexAttribArray(posLoc);
@@ -617,8 +653,7 @@ class GLRenderer {
     }
 
     _renderAnnotations() {
-        if ((!this.annoFillCount || this.annoFillCount === 0) &&
-            (!this.annoBandCount || this.annoBandCount === 0)) return;
+        if (Object.keys(this.annoGroups).length === 0) return;
 
         const gl = this.gl;
 
@@ -630,14 +665,18 @@ class GLRenderer {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        if (this.annoFillCount > 0) {
-            gl.uniform4f(this.uAnnoColor, 1.0, 0.4, 0.3, 0.25);
-            gl.drawArrays(gl.TRIANGLES, 0, this.annoFillCount);
-        }
+        for (const [label, group] of Object.entries(this.annoGroups)) {
+            const color = this.LABEL_COLORS[label] || [0.6, 0.6, 0.6];
 
-        if (this.annoBandCount > 0) {
-            gl.uniform4f(this.uAnnoColor, 1.0, 0.4, 0.3, 0.9);
-            gl.drawArrays(gl.TRIANGLES, this.annoFillCount, this.annoBandCount);
+            if (group.fillCount > 0) {
+                gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.25);
+                gl.drawArrays(gl.TRIANGLES, group.offset, group.fillCount);
+            }
+
+            if (group.bandCount > 0) {
+                gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.7);
+                gl.drawArrays(gl.TRIANGLES, group.offset + group.fillCount, group.bandCount);
+            }
         }
 
         gl.disable(gl.BLEND);

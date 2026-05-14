@@ -1296,7 +1296,18 @@ class App {
             return;
         }
 
-        this.annotations.push({ start, end, label, channel });
+        let originalChannel = channel;
+        if (this.showBipolar && this.bipolarChannels && channel) {
+            const bp = this.bipolarChannels.find(c => c.name === channel);
+            if (bp && bp.ch1 && bp.ch2) {
+                originalChannel = `${bp.ch1} & ${bp.ch2}`;
+            }
+        }
+
+        this.annotations.push({
+            start, end, label, channel,
+            originalChannel,
+        });
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
@@ -1382,19 +1393,21 @@ class App {
         }
 
         const lines = [
-            '# EEG 标注数据',
-            `# 文件: ${this.currentFile || '未知'}`,
-            `# 导出时间: ${new Date().toISOString()}`,
+            '# EEG Annotation Data',
+            `# File: ${this.currentFile || 'unknown'}`,
+            `# Exported: ${new Date().toISOString()}`,
             '#',
-            '起始(s)\t终止(s)\t通道\t标签\t时长(s)',
+            'Channel\tStart\tEnd\tLabel',
             '',
         ];
 
         for (const ann of this.annotations) {
+            const ch = ann.originalChannel || ann.channel || 'ALL';
             lines.push(
-                `${ann.start.toFixed(3)}\t${ann.end.toFixed(3)}\t` +
-                `${ann.channel || '全部'}\t${ann.label}\t` +
-                `${(ann.end - ann.start).toFixed(3)}`
+                `${ch}\t` +
+                `${this._formatTime(ann.start)}\t` +
+                `${this._formatTime(ann.end)}\t` +
+                `${ann.label}`
             );
         }
 
@@ -1423,9 +1436,32 @@ class App {
 
     async _importAnnotationsDialog() {
         if (window.electronAPI) {
-            await window.electronAPI.importAnnotations();
+            const content = await window.electronAPI.importAnnotations();
+            if (content) {
+                this._importAnnotations(content);
+            }
             return;
         }
+    }
+
+    _parseAbsoluteTime(timeStr) {
+        const match = timeStr.match(/^(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,3})$/);
+        if (!match) return NaN;
+        const h = parseInt(match[1]);
+        const m = parseInt(match[2]);
+        const s = parseInt(match[3]);
+        const ms = parseInt(match[4].padEnd(3, '0'));
+        const absSeconds = h * 3600 + m * 60 + s + ms / 1000;
+        if (this.recordingStart) {
+            const startH = this.recordingStart.getHours();
+            const startM = this.recordingStart.getMinutes();
+            const startS = this.recordingStart.getSeconds();
+            const startMs = this.recordingStart.getMilliseconds();
+            const startOffset = startH * 3600 + startM * 60 +
+                startS + startMs / 1000;
+            return absSeconds - startOffset;
+        }
+        return absSeconds;
     }
 
     _importAnnotations(content) {
@@ -1437,17 +1473,37 @@ class App {
             if (!trimmed || trimmed.startsWith('#')) continue;
 
             const parts = trimmed.split('\t');
-            if (parts.length >= 3) {
+            if (parts.length >= 4) {
+                const rawChannel = parts[0] === 'ALL' ? '' : parts[0];
+                const startStr = parts[1];
+                const endStr = parts[2];
+                const label = parts[3] || 'other';
+
+                let start = this._parseAbsoluteTime(startStr);
+                let end = this._parseAbsoluteTime(endStr);
+
+                if (isNaN(start)) start = parseFloat(startStr);
+                if (isNaN(end)) end = parseFloat(endStr);
+
+                if (!isNaN(start) && !isNaN(end) && end > start) {
+                    const channel = rawChannel.includes(' & ')
+                        ? '' : rawChannel;
+                    const originalChannel = rawChannel.includes(' & ')
+                        ? rawChannel : rawChannel;
+                    this.annotations.push({
+                        start, end, label, channel,
+                        originalChannel,
+                    });
+                    count++;
+                }
+            } else if (parts.length >= 3) {
                 const start = parseFloat(parts[0]);
                 const end = parseFloat(parts[1]);
+                const label = parts[2] || 'other';
                 let channel = '';
-                let label = '';
 
                 if (parts.length >= 4 && isNaN(parseFloat(parts[2]))) {
                     channel = parts[2] === '全部' ? '' : parts[2];
-                    label = parts[3] || '其他';
-                } else {
-                    label = parts[2];
                 }
 
                 if (!isNaN(start) && !isNaN(end) && end > start) {
