@@ -13,5 +13,12 @@
   "devDependencies": {
     "electron": "^42.0.1",
     "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false
+    }
   }
 }
