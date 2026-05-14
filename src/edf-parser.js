@@ -294,6 +294,7 @@ class EDFParser {
         for (const ch of channels) {
             const match =
                 ch.name.match(/^POL\s*([A-Za-z]+)(\d+)/i) ||
+                ch.name.match(/^EEG\s+([A-Za-z]+)\s+(\d+)-/i) ||
                 ch.name.match(/^EEG\s*([A-Za-z]+)(\d+)-/i) ||
                 ch.name.match(/^([A-Za-z]+)(\d+)/);
             if (match) {
@@ -340,7 +341,7 @@ class EDFParser {
                     ch2: ch2.name,
                 });
 
-                i += 2;
+                i++;
             } else {
                 i++;
             }
