@@ -25,6 +25,9 @@ class GLRenderer {
         this.lastMouseX = 0;
         this.dpr = window.devicePixelRatio || 1;
         this.selectedChannel = null;
+        this.fixedHeightMode = false;
+        this.fixedChannelHeight = 80;
+        this.channelScrollY = 0;
 
         this._initShaders();
         this._initQuad();
@@ -35,6 +38,22 @@ class GLRenderer {
 
     setSelectedChannel(name) {
         this.selectedChannel = name;
+    }
+
+    setFixedHeightMode(enabled) {
+        this.fixedHeightMode = enabled;
+        this.channelScrollY = 0;
+    }
+
+    get maxChannelScrollY() {
+        if (!this.fixedHeightMode || this.channels.length === 0) return 0;
+        const canvasHeight = this.canvas.clientHeight;
+        const totalHeight = this.channels.length * this.fixedChannelHeight;
+        return Math.max(0, totalHeight - canvasHeight);
+    }
+
+    setChannelScrollY(value) {
+        this.channelScrollY = Math.max(0, Math.min(value, this.maxChannelScrollY));
     }
 
     _compileShader(type, source) {
@@ -77,6 +96,10 @@ class GLRenderer {
             uniform float u_time_offset;
             uniform float u_sensitivity;
             uniform float u_y_offset;
+            uniform float u_fixed_mode;
+            uniform float u_channel_pixel_height;
+            uniform float u_canvas_height;
+            uniform float u_y_scroll;
 
             in float a_sample;
 
@@ -86,13 +109,20 @@ class GLRenderer {
                 float t = float(gl_VertexID) / u_sfreq + u_time_offset;
                 float x = (t - u_viewport_range.x) / (u_viewport_range.y - u_viewport_range.x);
 
-                float raw_h = 1.0 / u_channel_count;
-                float amp = raw_h * 0.45 * u_sensitivity;
-                float pad = min(amp, 0.02);
-                float usable = 1.0 - 2.0 * pad;
-                float ch = usable / u_channel_count;
-                float channel_center = (1.0 - pad) - (u_channel_index + 0.5) * ch;
-                float y = channel_center + a_sample * ch * 0.45 * u_sensitivity + u_y_offset;
+                float y;
+                if (u_fixed_mode > 0.5) {
+                    float ch = u_channel_pixel_height / u_canvas_height;
+                    float channel_center = 1.0 - (u_channel_index + 0.5) * ch + u_y_scroll;
+                    y = channel_center + a_sample * ch * 0.45 * u_sensitivity + u_y_offset;
+                } else {
+                    float raw_h = 1.0 / u_channel_count;
+                    float amp = raw_h * 0.45 * u_sensitivity;
+                    float pad = min(amp, 0.02);
+                    float usable = 1.0 - 2.0 * pad;
+                    float ch = usable / u_channel_count;
+                    float channel_center = (1.0 - pad) - (u_channel_index + 0.5) * ch;
+                    y = channel_center + a_sample * ch * 0.45 * u_sensitivity + u_y_offset;
+                }
 
                 v_pos = vec2(x, y);
                 gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
@@ -123,6 +153,10 @@ class GLRenderer {
         this.uColor = gl.getUniformLocation(this.waveProgram, 'u_color');
         this.uSensitivity = gl.getUniformLocation(this.waveProgram, 'u_sensitivity');
         this.uYOffset = gl.getUniformLocation(this.waveProgram, 'u_y_offset');
+        this.uFixedMode = gl.getUniformLocation(this.waveProgram, 'u_fixed_mode');
+        this.uChannelPixelHeight = gl.getUniformLocation(this.waveProgram, 'u_channel_pixel_height');
+        this.uCanvasHeight = gl.getUniformLocation(this.waveProgram, 'u_canvas_height');
+        this.uYScroll = gl.getUniformLocation(this.waveProgram, 'u_y_scroll');
 
         const gridVS = `#version 300 es
             precision highp float;
@@ -225,7 +259,7 @@ class GLRenderer {
         }, { passive: false });
 
         canvas.addEventListener('mousedown', (e) => {
-            if (e.button === 0) {
+            if (e.button === 0 && !this.fixedHeightMode) {
                 this.dragging = true;
                 this.lastMouseX = e.clientX;
             }
@@ -415,13 +449,22 @@ class GLRenderer {
         const rect = this.canvas.getBoundingClientRect();
         const y = (mouseY - rect.top) / rect.height;
         const channelCount = this.channels.length;
-        const rawH = 1.0 / channelCount;
-        const ampVal = rawH * 0.45 * this.sensitivity;
-        const padClamped = Math.min(ampVal, 0.02);
-        const usable = 1.0 - 2.0 * padClamped;
-        const ch = usable / channelCount;
-        const relY = (y - padClamped) / ch;
-        const channelIndex = Math.floor(relY);
+
+        let channelIndex;
+        if (this.fixedHeightMode) {
+            const ch = this.fixedChannelHeight / rect.height;
+            const yScrollNorm = this.channelScrollY / rect.height;
+            channelIndex = Math.floor((y + yScrollNorm) / ch);
+        } else {
+            const rawH = 1.0 / channelCount;
+            const ampVal = rawH * 0.45 * this.sensitivity;
+            const padClamped = Math.min(ampVal, 0.02);
+            const usable = 1.0 - 2.0 * padClamped;
+            const ch = usable / channelCount;
+            const relY = (y - padClamped) / ch;
+            channelIndex = Math.floor(relY);
+        }
+
         if (channelIndex < 0 || channelIndex >= channelCount) return null;
         return this.channels[channelIndex].name;
     }
@@ -432,12 +475,25 @@ class GLRenderer {
         const x = (mouseX - rect.left) / rect.width;
         const y = (mouseY - rect.top) / rect.height;
         const channelCount = this.channels.length;
-        const rawH = 1.0 / channelCount;
-        const ampVal = rawH * 0.45 * this.sensitivity;
-        const padClamped = Math.min(ampVal, 0.02);
-        const usable = 1.0 - 2.0 * padClamped;
-        const ch = usable / channelCount;
-        const channelIndex = Math.floor((y - padClamped) / ch);
+
+        let channelIndex;
+        let channelCenter;
+        let ch;
+        if (this.fixedHeightMode) {
+            ch = this.fixedChannelHeight / rect.height;
+            const yScrollNorm = this.channelScrollY / rect.height;
+            channelIndex = Math.floor((y + yScrollNorm) / ch);
+            channelCenter = 1.0 - (channelIndex + 0.5) * ch + yScrollNorm;
+        } else {
+            const rawH = 1.0 / channelCount;
+            const ampVal = rawH * 0.45 * this.sensitivity;
+            const padClamped = Math.min(ampVal, 0.02);
+            const usable = 1.0 - 2.0 * padClamped;
+            ch = usable / channelCount;
+            channelIndex = Math.floor((y - padClamped) / ch);
+            channelCenter = (1.0 - padClamped) - (channelIndex + 0.5) * ch;
+        }
+
         if (channelIndex < 0 || channelIndex >= channelCount) return null;
 
         const time = this.viewportStart + x * (this.viewportEnd - this.viewportStart);
@@ -460,7 +516,6 @@ class GLRenderer {
         gl.getBufferSubData(gl.ARRAY_BUFFER, sampleIndex * 4, tempBuf, 0, 1);
 
         const sampleVal = tempBuf[0];
-        const channelCenter = (1.0 - padClamped) - (channelIndex + 0.5) * ch;
         const waveY = channelCenter + sampleVal * ch * 0.45 * this.sensitivity;
 
         return {
@@ -518,15 +573,25 @@ class GLRenderer {
 
         const channelCount = this.channels.length;
         if (channelCount > 0) {
-            const rawH = 1.0 / channelCount;
-            const ampVal = rawH * 0.45 * this.sensitivity;
-            const padClamped = Math.min(ampVal, 0.02);
-            const usable = 1.0 - 2.0 * padClamped;
-            const ch = usable / channelCount;
-            for (let i = 1; i < channelCount; i++) {
-                const yNorm = (1.0 - padClamped) - i * ch;
-                const y = yNorm * 2 - 1;
-                lines.push(-1, y, 1, y);
+            if (this.fixedHeightMode) {
+                const ch = this.fixedChannelHeight / this.canvas.clientHeight;
+                const yScrollNorm = this.channelScrollY / this.canvas.clientHeight;
+                for (let i = 1; i < channelCount; i++) {
+                    const yNorm = 1.0 - i * ch + yScrollNorm;
+                    const y = yNorm * 2 - 1;
+                    lines.push(-1, y, 1, y);
+                }
+            } else {
+                const rawH = 1.0 / channelCount;
+                const ampVal = rawH * 0.45 * this.sensitivity;
+                const padClamped = Math.min(ampVal, 0.02);
+                const usable = 1.0 - 2.0 * padClamped;
+                const ch = usable / channelCount;
+                for (let i = 1; i < channelCount; i++) {
+                    const yNorm = (1.0 - padClamped) - i * ch;
+                    const y = yNorm * 2 - 1;
+                    lines.push(-1, y, 1, y);
+                }
             }
         }
 
@@ -589,6 +654,19 @@ class GLRenderer {
         gl.uniform1f(this.uChannelCount, channelCount);
         gl.uniform1f(this.uSfreq, this.sfreq);
         gl.uniform1f(this.uSensitivity, this.sensitivity);
+
+        if (this.fixedHeightMode) {
+            gl.uniform1f(this.uFixedMode, 1.0);
+            gl.uniform1f(this.uChannelPixelHeight, this.fixedChannelHeight);
+            gl.uniform1f(this.uCanvasHeight, this.canvas.clientHeight);
+            const yScrollNorm = this.channelScrollY / this.canvas.clientHeight;
+            gl.uniform1f(this.uYScroll, yScrollNorm);
+        } else {
+            gl.uniform1f(this.uFixedMode, 0.0);
+            gl.uniform1f(this.uChannelPixelHeight, 0.0);
+            gl.uniform1f(this.uCanvasHeight, 0.0);
+            gl.uniform1f(this.uYScroll, 0.0);
+        }
 
         const pixelWidth = this.canvas.width;
         const range = this.viewportEnd - this.viewportStart;

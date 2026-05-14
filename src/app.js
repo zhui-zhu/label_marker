@@ -34,11 +34,16 @@ class App {
 
         this.renderer.onViewportChange = (start, end) => {
             this._updateTimeDisplay(start, end);
+            this._updateLabelPositions();
         };
 
         this.renderer.onDrag = () => {
             this._hideTooltip();
         };
+
+        document.getElementById('channel-labels').addEventListener(
+            'wheel', (e) => e.preventDefault(), { passive: false }
+        );
     }
 
     _bindElectronAPI() {
@@ -98,6 +103,7 @@ class App {
         document.getElementById('btn-select-all').addEventListener('click', () => this._selectAllChannels());
         document.getElementById('btn-deselect-all').addEventListener('click', () => this._deselectAllChannels());
         document.getElementById('btn-bipolar').addEventListener('click', () => this._toggleBipolar());
+        document.getElementById('btn-fixed-height').addEventListener('click', () => this._toggleFixedHeight());
 
         document.getElementById('btn-channels').addEventListener('click', () => this._toggleChannelPanel());
         document.getElementById('btn-close-channels').addEventListener('click', () => this._hideChannelPanel());
@@ -119,6 +125,10 @@ class App {
         document.getElementById('lowpass-select').addEventListener('change', () => this._applyFilters());
 
         document.getElementById('waveform-canvas').addEventListener('click', (e) => {
+            if (this._wasDragging) {
+                this._wasDragging = false;
+                return;
+            }
             this._handleCanvasClick(e);
         });
 
@@ -131,10 +141,58 @@ class App {
 
         document.getElementById('waveform-canvas').addEventListener('mousedown', (e) => {
             if (e.button === 1) e.preventDefault();
+            if (e.button === 0 && this.renderer.fixedHeightMode) {
+                this._dragStartX = e.clientX;
+                this._dragStartY = e.clientY;
+                this._dragStartViewportStart = this.renderer.viewportStart;
+                this._dragStartChannelScrollY = this.renderer.channelScrollY;
+                this._isDragging = false;
+                this._wasDragging = false;
+            }
         });
 
         document.getElementById('waveform-canvas').addEventListener('mousemove', (e) => {
+            if (this._isDragging || this._dragStartX !== undefined) {
+                const dx = e.clientX - this._dragStartX;
+                const dy = e.clientY - this._dragStartY;
+                if (!this._isDragging && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+                    this._isDragging = true;
+                    this._wasDragging = true;
+                }
+                if (this._isDragging) {
+                    const timeRange = this.renderer.viewportEnd - this.renderer.viewportStart;
+                    const canvasWidth = this.renderer.canvas.clientWidth;
+                    const timeDelta = -(dx / canvasWidth) * timeRange;
+                    let newStart = this._dragStartViewportStart + timeDelta;
+                    let newEnd = newStart + timeRange;
+                    if (newStart < 0) { newStart = 0; newEnd = timeRange; }
+                    if (newEnd > this.renderer.totalDuration) {
+                        newEnd = this.renderer.totalDuration;
+                        newStart = newEnd - timeRange;
+                    }
+                    this.renderer.viewportStart = newStart;
+                    this.renderer.viewportEnd = newEnd;
+
+                    const scrollDelta = -dy;
+                    this.renderer.setChannelScrollY(
+                        this._dragStartChannelScrollY + scrollDelta
+                    );
+
+                    this.renderer.render();
+                    this._updateTimeDisplay(newStart, newEnd);
+                    this._updateLabelPositions();
+                    return;
+                }
+            }
             this._handleCanvasMouseMove(e);
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                this._dragStartX = undefined;
+                this._dragStartY = undefined;
+                this._isDragging = false;
+            }
         });
 
         document.getElementById('waveform-canvas').addEventListener('mouseleave', () => {
@@ -719,6 +777,20 @@ class App {
         this._updateAnnoChannelOptions();
     }
 
+    _toggleFixedHeight() {
+        if (!this.edfData) return;
+        const btn = document.getElementById('btn-fixed-height');
+        const newMode = !this.renderer.fixedHeightMode;
+        this.renderer.setFixedHeightMode(newMode);
+        btn.classList.toggle('active', newMode);
+        this.renderer.render();
+        this._updateChannelLabels();
+        this._setStatus(
+            newMode ? '已切换到固定高度模式（左键拖拽滚动）' : '已切换到自适应模式',
+            'info'
+        );
+    }
+
     _renderWaveforms() {
         if (!this.edfData || this.selectedChannels.length === 0) {
             this.renderer.channels = [];
@@ -859,6 +931,16 @@ class App {
         return out;
     }
 
+    _updateLabelPositions() {
+        if (!this.renderer.fixedHeightMode) return;
+        const container = document.getElementById('channel-labels');
+        const innerDiv = container.querySelector('div');
+        if (innerDiv) {
+            innerDiv.style.transform =
+                `translateY(${-this.renderer.channelScrollY}px)`;
+        }
+    }
+
     _updateChannelLabels() {
         const container = document.getElementById('channel-labels');
         container.innerHTML = '';
@@ -869,73 +951,133 @@ class App {
         const containerHeight = container.clientHeight;
         const channelCount = channels.length;
 
-        const rawH = 1.0 / channelCount;
-        const ampVal = rawH * 0.45 * this.renderer.sensitivity;
-        const padClamped = Math.min(ampVal, 0.02);
-        const padPx = Math.round(padClamped * containerHeight);
-        const usablePx = containerHeight - 2 * padPx;
-        const channelHeight = usablePx / channelCount;
+        if (this.renderer.fixedHeightMode) {
+            const chHeight = this.renderer.fixedChannelHeight;
+            const scrollY = this.renderer.channelScrollY;
 
-        container.style.paddingTop = '0';
-        container.style.paddingBottom = '0';
+            container.style.overflow = 'hidden';
+            container.style.paddingTop = '0';
+            container.style.paddingBottom = '0';
 
-        const minFontSize = 6;
-        const maxFontSize = 14;
-        const adaptiveFontSize = Math.max(
-            minFontSize,
-            Math.min(maxFontSize, Math.floor(channelHeight * 0.65))
-        );
+            const fontSize = Math.max(8, Math.min(14, Math.floor(chHeight * 0.3)));
 
-        let maxNameWidth = 0;
-        const tempSpan = document.createElement('span');
-        tempSpan.style.fontFamily = "'Cascadia Code', 'Consolas', monospace";
-        tempSpan.style.fontSize = adaptiveFontSize + 'px';
-        tempSpan.style.position = 'absolute';
-        tempSpan.style.visibility = 'hidden';
-        tempSpan.style.whiteSpace = 'nowrap';
-        document.body.appendChild(tempSpan);
-        for (const ch of channels) {
-            tempSpan.textContent = ch.name;
-            maxNameWidth = Math.max(maxNameWidth, tempSpan.offsetWidth);
-        }
-        document.body.removeChild(tempSpan);
-
-        const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
-        container.style.width = labelWidth + 'px';
-
-        const topSpacer = document.createElement('div');
-        topSpacer.style.height = padPx + 'px';
-        topSpacer.style.flexShrink = '0';
-        container.appendChild(topSpacer);
-
-        for (let i = 0; i < channelCount; i++) {
-            const ch = channels[i];
-            const div = document.createElement('div');
-            div.className = 'channel-label-item';
-            if (ch.name === this.selectedAnnoChannel) {
-                div.classList.add('selected');
+            let maxNameWidth = 0;
+            const tempSpan = document.createElement('span');
+            tempSpan.style.fontFamily = "'Cascadia Code', 'Consolas', monospace";
+            tempSpan.style.fontSize = fontSize + 'px';
+            tempSpan.style.position = 'absolute';
+            tempSpan.style.visibility = 'hidden';
+            tempSpan.style.whiteSpace = 'nowrap';
+            document.body.appendChild(tempSpan);
+            for (const ch of channels) {
+                tempSpan.textContent = ch.name;
+                maxNameWidth = Math.max(maxNameWidth, tempSpan.offsetWidth);
             }
-            div.style.height = channelHeight + 'px';
-            div.style.fontSize = adaptiveFontSize + 'px';
-            div.style.lineHeight = channelHeight + 'px';
+            document.body.removeChild(tempSpan);
 
-            const span = document.createElement('span');
-            span.textContent = ch.name;
-            span.title = ch.name;
+            const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
+            container.style.width = labelWidth + 'px';
 
-            div.appendChild(span);
-            div.addEventListener('click', () => {
-                this._selectAnnoChannel(ch.name);
-                this._setStatus(`已选中通道: ${ch.name}`, 'info');
-                this._updateStepUI();
-            });
-            container.appendChild(div);
+            const innerDiv = document.createElement('div');
+            innerDiv.style.transform = `translateY(${-scrollY}px)`;
+
+            for (let i = 0; i < channelCount; i++) {
+                const ch = channels[i];
+                const div = document.createElement('div');
+                div.className = 'channel-label-item';
+                if (ch.name === this.selectedAnnoChannel) {
+                    div.classList.add('selected');
+                }
+                div.style.height = chHeight + 'px';
+                div.style.fontSize = fontSize + 'px';
+                div.style.lineHeight = chHeight + 'px';
+
+                const span = document.createElement('span');
+                span.textContent = ch.name;
+                span.title = ch.name;
+
+                div.appendChild(span);
+                div.addEventListener('click', () => {
+                    this._selectAnnoChannel(ch.name);
+                    this._setStatus(`已选中通道: ${ch.name}`, 'info');
+                    this._updateStepUI();
+                });
+                innerDiv.appendChild(div);
+            }
+
+            container.appendChild(innerDiv);
+        } else {
+            const rawH = 1.0 / channelCount;
+            const ampVal = rawH * 0.45 * this.renderer.sensitivity;
+            const padClamped = Math.min(ampVal, 0.02);
+            const padPx = Math.round(padClamped * containerHeight);
+            const usablePx = containerHeight - 2 * padPx;
+            const channelHeight = usablePx / channelCount;
+
+            container.style.overflow = 'hidden';
+            container.style.position = '';
+            container.style.display = '';
+            container.style.paddingTop = '0';
+            container.style.paddingBottom = '0';
+
+            const minFontSize = 6;
+            const maxFontSize = 14;
+            const adaptiveFontSize = Math.max(
+                minFontSize,
+                Math.min(maxFontSize, Math.floor(channelHeight * 0.65))
+            );
+
+            let maxNameWidth = 0;
+            const tempSpan = document.createElement('span');
+            tempSpan.style.fontFamily = "'Cascadia Code', 'Consolas', monospace";
+            tempSpan.style.fontSize = adaptiveFontSize + 'px';
+            tempSpan.style.position = 'absolute';
+            tempSpan.style.visibility = 'hidden';
+            tempSpan.style.whiteSpace = 'nowrap';
+            document.body.appendChild(tempSpan);
+            for (const ch of channels) {
+                tempSpan.textContent = ch.name;
+                maxNameWidth = Math.max(maxNameWidth, tempSpan.offsetWidth);
+            }
+            document.body.removeChild(tempSpan);
+
+            const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
+            container.style.width = labelWidth + 'px';
+
+            const topSpacer = document.createElement('div');
+            topSpacer.style.height = padPx + 'px';
+            topSpacer.style.flexShrink = '0';
+            container.appendChild(topSpacer);
+
+            for (let i = 0; i < channelCount; i++) {
+                const ch = channels[i];
+                const div = document.createElement('div');
+                div.className = 'channel-label-item';
+                if (ch.name === this.selectedAnnoChannel) {
+                    div.classList.add('selected');
+                }
+                div.style.height = channelHeight + 'px';
+                div.style.fontSize = adaptiveFontSize + 'px';
+                div.style.lineHeight = channelHeight + 'px';
+
+                const span = document.createElement('span');
+                span.textContent = ch.name;
+                span.title = ch.name;
+
+                div.appendChild(span);
+                div.addEventListener('click', () => {
+                    this._selectAnnoChannel(ch.name);
+                    this._setStatus(`已选中通道: ${ch.name}`, 'info');
+                    this._updateStepUI();
+                });
+                container.appendChild(div);
+            }
+
+            const bottomSpacer = document.createElement('div');
+            bottomSpacer.style.height = padPx + 'px';
+            bottomSpacer.style.flexShrink = '0';
+            container.appendChild(bottomSpacer);
         }
-
-        const bottomSpacer = document.createElement('div');
-        bottomSpacer.style.height = padPx + 'px';
-        bottomSpacer.style.flexShrink = '0';
-        container.appendChild(bottomSpacer);
     }
 
     _updateTimeDisplay(start, end) {
@@ -1036,6 +1178,7 @@ class App {
             this._selectAnnoChannel(channelName);
             this.renderer.setSelectedChannel(channelName);
             this.renderer.render();
+            this._updateChannelLabels();
             this._setStatus(`已选中通道: ${channelName}`, 'info');
         }
 
