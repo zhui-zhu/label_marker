@@ -21,6 +21,8 @@ class App {
         this.originalChannels = null;
         this.recordingStart = null;
         this._lasso = null;
+        this.undoStack = [];
+        this.redoStack = [];
 
         this._initRenderer();
         this._bindEvents();
@@ -218,6 +220,14 @@ class App {
             if (e.key === ' ' && this.edfData) {
                 e.preventDefault();
                 this._fitToWindow();
+            }
+            if (e.ctrlKey && e.key === 'z') {
+                e.preventDefault();
+                this._undo();
+            }
+            if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) {
+                e.preventDefault();
+                this._redo();
             }
         });
 
@@ -1282,6 +1292,48 @@ class App {
         this._updateChannelLabels();
     }
 
+    // ── Undo / Redo ──────────────────────────────────────────────────────────
+
+    _saveToHistory() {
+        // 深拷贝当前标注数组存入 undoStack
+        this.undoStack.push(this.annotations.map(a => ({ ...a })));
+        if (this.undoStack.length > 50) this.undoStack.shift();
+        // 任何新操作都清空 redoStack
+        this.redoStack = [];
+    }
+
+    _undo() {
+        if (this.undoStack.length === 0) {
+            this._setStatus('没有可撤销的操作', 'info');
+            return;
+        }
+        // 当前状态压入 redoStack
+        this.redoStack.push(this.annotations.map(a => ({ ...a })));
+        // 恢复上一步
+        this.annotations = this.undoStack.pop();
+        this._updateAnnotationsList();
+        this.renderer.setAnnotations(this.annotations);
+        this.renderer.render();
+        this._setStatus(`已撤销 — 当前标注 ${this.annotations.length} 条`, 'info');
+    }
+
+    _redo() {
+        if (this.redoStack.length === 0) {
+            this._setStatus('没有可重做的操作', 'info');
+            return;
+        }
+        // 当前状态压入 undoStack
+        this.undoStack.push(this.annotations.map(a => ({ ...a })));
+        // 恢复下一步
+        this.annotations = this.redoStack.pop();
+        this._updateAnnotationsList();
+        this.renderer.setAnnotations(this.annotations);
+        this.renderer.render();
+        this._setStatus(`已重做 — 当前标注 ${this.annotations.length} 条`, 'info');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     _addAnnotation() {
         const labelInput = document.getElementById('anno-label');
         const channelInput = document.getElementById('anno-channel');
@@ -1295,6 +1347,8 @@ class App {
             this._setStatus('无效的时间范围', 'error');
             return;
         }
+
+        this._saveToHistory();
 
         let originalChannel = channel;
         if (this.showBipolar && this.bipolarChannels && channel) {
@@ -1329,6 +1383,7 @@ class App {
     }
 
     _deleteAnnotation(index) {
+        this._saveToHistory();
         this.annotations.splice(index, 1);
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
@@ -1336,6 +1391,8 @@ class App {
     }
 
     _clearAnnotations() {
+        if (this.annotations.length === 0) return;
+        this._saveToHistory();
         this.annotations = [];
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
@@ -1465,6 +1522,7 @@ class App {
     }
 
     _importAnnotations(content) {
+        this._saveToHistory();
         const lines = content.split('\n');
         let count = 0;
 
