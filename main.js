@@ -170,6 +170,7 @@ ipcMain.handle('open-file-dialog', async () => {
             name: path.basename(filePath),
             size: buf.length,
             data: buf,
+            filePath: filePath,
         });
     }
     return files;
@@ -255,6 +256,85 @@ ipcMain.handle('clear-autosave', async (event, edfFileName) => {
         if (fs.existsSync(autosavePath)) {
             fs.unlinkSync(autosavePath);
         }
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+function getRecentFilesPath() {
+    return path.join(app.getPath('userData'), 'recent_files.json');
+}
+
+function loadRecentFiles() {
+    try {
+        const p = getRecentFilesPath();
+        if (fs.existsSync(p)) {
+            const content = fs.readFileSync(p, 'utf-8');
+            return JSON.parse(content);
+        }
+    } catch (err) {
+        console.error('加载最近文件失败:', err);
+    }
+    return [];
+}
+
+function saveRecentFiles(files) {
+    try {
+        const p = getRecentFilesPath();
+        fs.writeFileSync(p, JSON.stringify(files, null, 2), 'utf-8');
+    } catch (err) {
+        console.error('保存最近文件失败:', err);
+    }
+}
+
+function addRecentFile(filePath, fileName, fileSize) {
+    let files = loadRecentFiles();
+    // 移除已存在的相同文件
+    files = files.filter(f => f.filePath !== filePath);
+    // 添加到列表开头
+    files.unshift({
+        filePath,
+        fileName,
+        fileSize,
+        openedAt: new Date().toISOString(),
+    });
+    // 只保留最近 10 个
+    if (files.length > 10) {
+        files = files.slice(0, 10);
+    }
+    saveRecentFiles(files);
+}
+
+ipcMain.handle('get-recent-files', async () => {
+    return loadRecentFiles();
+});
+
+ipcMain.handle('open-recent-file', async (event, filePath) => {
+    try {
+        if (!fs.existsSync(filePath)) {
+            return { success: false, error: '文件不存在' };
+        }
+        const buf = fs.readFileSync(filePath);
+        const stats = fs.statSync(filePath);
+        addRecentFile(filePath, path.basename(filePath), stats.size);
+        return {
+            success: true,
+            data: {
+                name: path.basename(filePath),
+                size: stats.size,
+                data: buf,
+                filePath: filePath,
+            }
+        };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('add-recent-file', async (event, filePath, fileName, fileSize) => {
+    try {
+        addRecentFile(filePath, fileName, fileSize);
         return { success: true };
     } catch (err) {
         return { success: false, error: err.message };

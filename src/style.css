@@ -78,6 +78,71 @@ body {
     font-family: 'Cascadia Code', 'Consolas', monospace;
 }
 
+.recent-files-dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.recent-files-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 280px;
+    max-width: 400px;
+    max-height: 400px;
+    overflow-y: auto;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+    padding: 4px 0;
+}
+
+.recent-files-menu.hidden {
+    display: none;
+}
+
+.recent-file-item {
+    display: flex;
+    flex-direction: column;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+}
+
+.recent-file-item:last-child {
+    border-bottom: none;
+}
+
+.recent-file-item:hover {
+    background: var(--bg-hover);
+}
+
+.recent-file-name {
+    color: var(--text-primary);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.recent-file-path {
+    color: var(--text-muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+.recent-file-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 12px;
+    text-align: center;
+}
+
 .time-range {
     color: var(--accent);
     font-size: 12px;

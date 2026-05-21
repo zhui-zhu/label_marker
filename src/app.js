@@ -92,6 +92,11 @@ class App {
 
     _bindEvents() {
         document.getElementById('btn-open').addEventListener('click', () => this._openFile());
+        document.getElementById('btn-recent').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggleRecentFilesMenu();
+        });
+        document.addEventListener('click', () => this._hideRecentFilesMenu());
         document.getElementById('btn-export').addEventListener('click', () => this._exportAnnotations());
         document.getElementById('btn-import').addEventListener('click', () => this._importAnnotationsDialog());
         document.getElementById('btn-add-anno').addEventListener('click', () => this._addAnnotation());
@@ -500,6 +505,9 @@ class App {
                         try {
                             const arrayBuffer = this._ensureArrayBuffer(file.data);
                             this._loadEDFFromArrayBuffer(arrayBuffer, file.name, file.size);
+                            if (file.filePath) {
+                                await window.electronAPI.addRecentFile(file.filePath, file.name, file.size);
+                            }
                         } catch (err) {
                             this._setStatus('数据传输错误: ' + err.message, 'error');
                         }
@@ -525,6 +533,74 @@ class App {
             }
         };
         input.click();
+    }
+
+    async _toggleRecentFilesMenu() {
+        const menu = document.getElementById('recent-files-menu');
+        if (menu.classList.contains('hidden')) {
+            await this._updateRecentFilesMenu();
+            menu.classList.remove('hidden');
+        } else {
+            menu.classList.add('hidden');
+        }
+    }
+
+    _hideRecentFilesMenu() {
+        const menu = document.getElementById('recent-files-menu');
+        if (menu) {
+            menu.classList.add('hidden');
+        }
+    }
+
+    async _updateRecentFilesMenu() {
+        const menu = document.getElementById('recent-files-menu');
+        if (!window.electronAPI) {
+            menu.innerHTML = '<div class="recent-file-empty">仅 Electron 版本支持</div>';
+            return;
+        }
+        try {
+            const files = await window.electronAPI.getRecentFiles();
+            if (!files || files.length === 0) {
+                menu.innerHTML = '<div class="recent-file-empty">无最近文件</div>';
+                return;
+            }
+            menu.innerHTML = files.map(f => `
+                <div class="recent-file-item" data-path="${this._escapeHtml(f.filePath)}">
+                    <span class="recent-file-name">${this._escapeHtml(f.fileName)}</span>
+                    <span class="recent-file-path">${this._escapeHtml(f.filePath)}</span>
+                </div>
+            `).join('');
+            menu.querySelectorAll('.recent-file-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    this._openRecentFile(item.dataset.path);
+                });
+            });
+        } catch (err) {
+            menu.innerHTML = '<div class="recent-file-empty">加载失败</div>';
+        }
+    }
+
+    async _openRecentFile(filePath) {
+        this._hideRecentFilesMenu();
+        if (!window.electronAPI) return;
+        try {
+            const result = await window.electronAPI.openRecentFile(filePath);
+            if (result.success && result.data) {
+                const arrayBuffer = this._ensureArrayBuffer(result.data.data);
+                this._loadEDFFromArrayBuffer(arrayBuffer, result.data.name, result.data.size);
+                await window.electronAPI.addRecentFile(result.data.filePath, result.data.name, result.data.size);
+            } else {
+                this._setStatus('打开文件失败: ' + (result.error || '未知错误'), 'error');
+            }
+        } catch (err) {
+            this._setStatus('打开最近文件失败: ' + err.message, 'error');
+        }
+    }
+
+    _escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
     }
 
     _loadEDFFromArrayBuffer(arrayBuffer, fileName, fileSize) {
