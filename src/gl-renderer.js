@@ -1,6 +1,9 @@
 class GLRenderer {
     constructor(canvas) {
         this.canvas = canvas;
+        this.timeAxisCanvas = null;
+        this.timeAxisCtx = null;
+
         this.gl = canvas.getContext('webgl2', {
             antialias: false,
             alpha: false,
@@ -38,6 +41,14 @@ class GLRenderer {
 
     setSelectedChannel(name) {
         this.selectedChannel = name;
+    }
+
+    setTimeAxisCanvas(canvas) {
+        this.timeAxisCanvas = canvas;
+        this.timeAxisCtx = canvas ? canvas.getContext('2d') : null;
+        if (canvas) {
+            this._resizeTimeAxis();
+        }
     }
 
     setFixedHeightMode(enabled) {
@@ -322,6 +333,7 @@ class GLRenderer {
         this.canvas.width = w;
         this.canvas.height = h;
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        this._resizeTimeAxis();
     }
 
     setChannels(channels, sfreq, totalDuration) {
@@ -585,6 +597,8 @@ class GLRenderer {
         this._renderAnnotations();
 
         gl.disable(gl.SCISSOR_TEST);
+
+        this._renderTimeAxis();
     }
 
     _renderGrid() {
@@ -797,6 +811,91 @@ class GLRenderer {
         gl.deleteVertexArray(this.quadVAO);
         gl.deleteVertexArray(this.annoVAO);
         gl.deleteBuffer(this.annoVBO);
+    }
+
+    _resizeTimeAxis() {
+        if (!this.timeAxisCanvas) return;
+        const dpr = window.devicePixelRatio || 1;
+        const h = 32;
+        // 获取 canvas-container 的总宽度
+        const container = this.canvas.parentElement;
+        const containerW = container.clientWidth;
+        // 获取 channel-labels 的宽度
+        const channelLabels = document.getElementById('channel-labels');
+        const labelW = channelLabels ? channelLabels.clientWidth : 0;
+        // time-axis-canvas 宽度 = container宽度 - label宽度
+        const w = containerW - labelW;
+        this.timeAxisCanvas.width = w * dpr;
+        this.timeAxisCanvas.height = h * dpr;
+        this.timeAxisCanvas.style.width = w + 'px';
+        this.timeAxisCanvas.style.height = h + 'px';
+        this.timeAxisCanvas.style.left = labelW + 'px';
+        // 让 canvas-container 为 time-axis-canvas 预留空间
+        container.style.paddingBottom = h + 'px';
+    }
+
+    _renderTimeAxis() {
+        if (!this.timeAxisCtx) return;
+        const ctx = this.timeAxisCtx;
+        const canvas = this.timeAxisCanvas;
+        const dpr = window.devicePixelRatio || 1;
+        const range = this.viewportEnd - this.viewportStart;
+        // 与 _resizeTimeAxis 保持一致，使用 canvas.width / dpr 作为实际渲染宽度
+        const w = canvas.width / dpr;
+        const h = 32;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Background
+        ctx.fillStyle = 'rgba(10, 15, 30, 0.9)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Determine tick step (same logic as grid)
+        let tickStep;
+        if (range <= 5) tickStep = 0.5;
+        else if (range <= 10) tickStep = 1;
+        else if (range <= 30) tickStep = 5;
+        else if (range <= 60) tickStep = 10;
+        else if (range <= 300) tickStep = 30;
+        else tickStep = 60;
+
+        const startTick = Math.ceil(this.viewportStart / tickStep) * tickStep;
+        ctx.strokeStyle = 'rgba(100, 130, 180, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.font = `${10 * dpr}px 'Cascadia Code', 'Consolas', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        for (let t = startTick; t <= this.viewportEnd; t += tickStep) {
+            const x = ((t - this.viewportStart) / range) * w * dpr;
+            // Tick line
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, 6 * dpr);
+            ctx.stroke();
+            // Time label
+            const label = this._formatTimeLabel(t);
+            ctx.fillStyle = 'rgba(160, 180, 210, 0.9)';
+            ctx.fillText(label, x, (18) * dpr);
+        }
+
+        // Top border line
+        ctx.strokeStyle = 'rgba(100, 130, 180, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, 0.5);
+        ctx.lineTo(canvas.width, 0.5);
+        ctx.stroke();
+    }
+
+    _formatTimeLabel(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        if (h > 0) {
+            return `${h}:${String(m).padStart(2, '0')}:${s % 1 === 0 ? String(s).padStart(2, '0') : s.toFixed(1)}`;
+        }
+        return `${m}:${String(s).padStart(2, '0')}`;
     }
 }
 

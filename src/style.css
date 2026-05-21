@@ -472,6 +472,16 @@ body {
     height: 100%;
 }
 
+#time-axis-canvas {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 32px;
+    pointer-events: none;
+    z-index: 10;
+    background: transparent;
+}
+
 .waveform-tooltip {
     position: absolute;
     pointer-events: none;

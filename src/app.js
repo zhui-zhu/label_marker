@@ -33,7 +33,9 @@ class App {
 
     _initRenderer() {
         const canvas = document.getElementById('waveform-canvas');
+        const timeAxisCanvas = document.getElementById('time-axis-canvas');
         this.renderer = new GLRenderer(canvas);
+        this.renderer.setTimeAxisCanvas(timeAxisCanvas);
 
         this.renderer.onViewportChange = (start, end) => {
             this._updateTimeDisplay(start, end);
