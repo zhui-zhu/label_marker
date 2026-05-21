@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
     exportAnnotations: (data) => ipcRenderer.invoke('export-annotations', data),
     importAnnotations: () => ipcRenderer.invoke('import-annotations'),
+    saveAutosave: (data) => ipcRenderer.invoke('save-autosave', data),
+    loadAutosave: (edfFileName) => ipcRenderer.invoke('load-autosave', edfFileName),
+    clearAutosave: (edfFileName) => ipcRenderer.invoke('clear-autosave', edfFileName),
 
     onFileOpened: (callback) => {
         ipcRenderer.on('edf-file-opened', (event, data) => callback(data));

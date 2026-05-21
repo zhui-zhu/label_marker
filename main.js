@@ -205,3 +205,58 @@ ipcMain.handle('import-annotations', async () => {
 
     return fs.readFileSync(result.filePaths[0], 'utf-8');
 });
+
+function getAutosavePath(edfFileName) {
+    const autosaveDir = path.join(app.getPath('userData'), 'autosave');
+    if (!fs.existsSync(autosaveDir)) {
+        fs.mkdirSync(autosaveDir, { recursive: true });
+    }
+    const safeName = edfFileName ? edfFileName.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'unknown';
+    return path.join(autosaveDir, `autosave_${safeName}.json`);
+}
+
+ipcMain.handle('save-autosave', async (event, data) => {
+    try {
+        const autosavePath = getAutosavePath(data.edfFileName);
+        const autosaveData = {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            edfFileName: data.edfFileName || '',
+            duration: data.duration || 0,
+            sfreq: data.sfreq || 0,
+            channels: data.channels || [],
+            annotations: data.annotations || [],
+            viewportStart: data.viewportStart || 0,
+        };
+        fs.writeFileSync(autosavePath, JSON.stringify(autosaveData, null, 2), 'utf-8');
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('load-autosave', async (event, edfFileName) => {
+    try {
+        const autosavePath = getAutosavePath(edfFileName);
+        if (!fs.existsSync(autosavePath)) {
+            return { success: true, data: null };
+        }
+        const content = fs.readFileSync(autosavePath, 'utf-8');
+        const data = JSON.parse(content);
+        return { success: true, data };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('clear-autosave', async (event, edfFileName) => {
+    try {
+        const autosavePath = getAutosavePath(edfFileName);
+        if (fs.existsSync(autosavePath)) {
+            fs.unlinkSync(autosavePath);
+        }
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});

@@ -23,6 +23,7 @@ class App {
         this._lasso = null;
         this.undoStack = [];
         this.redoStack = [];
+        this._autosaveTimer = null;
 
         this._initRenderer();
         this._bindEvents();
@@ -431,6 +432,8 @@ class App {
     }
 
     async _openFile() {
+        this._stopAutosave();
+
         if (window.electronAPI) {
             try {
                 const files = await window.electronAPI.openFileDialog();
@@ -519,6 +522,54 @@ class App {
             ` | ${this.sfreq.toFixed(0)}Hz | ${this.duration.toFixed(0)}s | ${parseTime}ms`,
             'success'
         );
+
+        this._startAutosave();
+
+        this._checkAutosave(fileName).then(ad => {
+            if (!ad) return;
+            this._showAutosaveModal(ad, fileName);
+        });
+    }
+
+    _showAutosaveModal(ad, fileName) {
+        const modal = document.getElementById('autosave-modal');
+        const info = document.getElementById('autosave-modal-info');
+        const btnRestore = document.getElementById('autosave-btn-restore');
+        const btnDiscard = document.getElementById('autosave-btn-discard');
+
+        const savedAt = new Date(ad.savedAt);
+        info.innerHTML =
+            `<span class="info-label">文件</span>${this._escapeHtml(ad.edfFileName)}<br>` +
+            `<span class="info-label">标注数</span>${ad.annotations.length} 条<br>` +
+            `<span class="info-label">保存时间</span>${savedAt.toLocaleString()}`;
+
+        modal.style.display = 'flex';
+
+        const onRestore = () => {
+            modal.style.display = 'none';
+            btnRestore.removeEventListener('click', onRestore);
+            btnDiscard.removeEventListener('click', onDiscard);
+            this._applyAutosaveData(ad);
+            this._setStatus(`已恢复 ${this.annotations.length} 条标注`, 'success');
+        };
+
+        const onDiscard = () => {
+            modal.style.display = 'none';
+            btnRestore.removeEventListener('click', onRestore);
+            btnDiscard.removeEventListener('click', onDiscard);
+            if (window.electronAPI) {
+                window.electronAPI.clearAutosave(fileName);
+            }
+        };
+
+        btnRestore.addEventListener('click', onRestore);
+        btnDiscard.addEventListener('click', onDiscard);
+    }
+
+    _escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
     }
 
     _updateAnnoChannelOptions() {
@@ -1315,6 +1366,7 @@ class App {
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
         this._setStatus(`已撤销 — 当前标注 ${this.annotations.length} 条`, 'info');
+        this._doAutosave();
     }
 
     _redo() {
@@ -1330,6 +1382,7 @@ class App {
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
         this._setStatus(`已重做 — 当前标注 ${this.annotations.length} 条`, 'info');
+        this._doAutosave();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1380,6 +1433,7 @@ class App {
         this.renderer.render();
         this._updateChannelLabels();
         this._updateStepUI();
+        this._doAutosave();
     }
 
     _deleteAnnotation(index) {
@@ -1388,6 +1442,7 @@ class App {
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
+        this._doAutosave();
     }
 
     _clearAnnotations() {
@@ -1397,6 +1452,7 @@ class App {
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
+        this._doAutosave();
     }
 
     _updateAnnotationsList() {
@@ -1477,6 +1533,7 @@ class App {
             });
             if (result) {
                 this._setStatus(`已导出 ${this.annotations.length} 条标注`, 'success');
+                await window.electronAPI.clearAutosave(this.currentFile);
             }
             return;
         }
@@ -1575,6 +1632,7 @@ class App {
         this.renderer.setAnnotations(this.annotations);
         this.renderer.render();
         this._setStatus(`已导入 ${count} 条标注`, 'success');
+        this._doAutosave();
     }
 
     _fitToWindow() {
@@ -1642,7 +1700,59 @@ class App {
         }
         return this._formatTime(seconds);
     }
+
+    async _checkAutosave(edfFileName) {
+        if (!window.electronAPI || !edfFileName) return null;
+        const result = await window.electronAPI.loadAutosave(edfFileName);
+        if (!result.success || !result.data) return null;
+        const ad = result.data;
+        if (!ad.edfFileName || ad.annotations.length === 0) return null;
+        return ad;
+    }
+
+    _startAutosave() {
+        this._stopAutosave();
+        this._autosaveTimer = setInterval(() => {
+            this._doAutosave();
+        }, 30000);
+    }
+
+    _stopAutosave() {
+        if (this._autosaveTimer) {
+            clearInterval(this._autosaveTimer);
+            this._autosaveTimer = null;
+        }
+    }
+
+    async _doAutosave() {
+        if (!window.electronAPI || !this.currentFile) return;
+        const data = {
+            edfFileName: this.currentFile,
+            duration: this.duration || 0,
+            sfreq: this.sfreq || 0,
+            channels: this.channels ? this.channels.map(ch => ch.name) : [],
+            annotations: this.annotations || [],
+            viewportStart: this.renderer ? this.renderer.viewportStart : 0,
+        };
+        await window.electronAPI.saveAutosave(data);
+    }
+
+    _applyAutosaveData(ad) {
+        this.annotations = ad.annotations || [];
+        this._updateAnnotationsList();
+        if (this.renderer) {
+            this.renderer.setAnnotations(this.annotations);
+            this.renderer.render();
+        }
+    }
 }
+
+window.addEventListener('beforeunload', () => {
+    if (window.app) {
+        window.app._doAutosave();
+        window.app._stopAutosave();
+    }
+});
 
 window.addEventListener('DOMContentLoaded', () => {
     window.app = new App();
