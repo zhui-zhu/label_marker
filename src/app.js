@@ -908,6 +908,7 @@ class App {
         const medianRange = ranges[Math.floor(ranges.length / 2)];
         const multiplier = (medianRange / 2) / uvValue;
         this.renderer.setSensitivity(multiplier);
+        this._updateChannelLabels();
     }
 
     _applyFilters() {
@@ -1044,6 +1045,14 @@ class App {
             const innerDiv = document.createElement('div');
             innerDiv.style.transform = `translateY(${-scrollY}px)`;
 
+            // 计算幅度参考线的位置
+            // sensitivity=1 时波形占通道高度的 0.45
+            // 限制参考线偏移不超过通道高度的 45%，确保在可见范围内
+            const maxOffset = chHeight * 0.45;
+            const refOffset = Math.min(maxOffset, chHeight * 0.45 * this.renderer.sensitivity);
+            const refLineTop = chHeight * 0.5 - refOffset;  // 正峰值参考线位置
+            const refLineBottom = chHeight * 0.5 + refOffset; // 负峰值参考线位置
+
             for (let i = 0; i < channelCount; i++) {
                 const ch = channels[i];
                 const div = document.createElement('div');
@@ -1054,6 +1063,44 @@ class App {
                 div.style.height = chHeight + 'px';
                 div.style.fontSize = fontSize + 'px';
                 div.style.lineHeight = chHeight + 'px';
+                div.style.position = 'relative';
+
+                // 添加幅度标尺
+                const scalebar = document.createElement('div');
+                scalebar.className = 'scalebar';
+
+                // 中心线
+                const centerLine = document.createElement('div');
+                centerLine.className = 'scalebar-line center';
+                centerLine.style.top = (chHeight / 2) + 'px';
+                scalebar.appendChild(centerLine);
+
+                // 正峰值参考线
+                const posLine = document.createElement('div');
+                posLine.className = 'scalebar-line';
+                posLine.style.top = refLineTop + 'px';
+                scalebar.appendChild(posLine);
+
+                // 负峰值参考线
+                const negLine = document.createElement('div');
+                negLine.className = 'scalebar-line';
+                negLine.style.top = refLineBottom + 'px';
+                scalebar.appendChild(negLine);
+
+                // 电压标签
+                const label = document.createElement('span');
+                label.className = 'scalebar-label';
+                label.style.top = refLineTop + 'px';
+                label.textContent = '+' + this.sensitivityUv + 'μV';
+                scalebar.appendChild(label);
+
+                const labelNeg = document.createElement('span');
+                labelNeg.className = 'scalebar-label';
+                labelNeg.style.top = refLineBottom + 'px';
+                labelNeg.textContent = '-' + this.sensitivityUv + 'μV';
+                scalebar.appendChild(labelNeg);
+
+                div.appendChild(scalebar);
 
                 const span = document.createElement('span');
                 span.textContent = ch.name;
@@ -1112,6 +1159,12 @@ class App {
             topSpacer.style.flexShrink = '0';
             container.appendChild(topSpacer);
 
+            // 计算幅度参考线的位置
+            // sensitivity=1 时波形占通道高度的 0.45
+            // 限制参考线偏移不超过通道高度的 45%，确保在可见范围内
+            const maxOffset = channelHeight * 0.45;
+            const refOffset = Math.min(maxOffset, channelHeight * 0.45 * this.renderer.sensitivity);
+
             for (let i = 0; i < channelCount; i++) {
                 const ch = channels[i];
                 const div = document.createElement('div');
@@ -1122,6 +1175,46 @@ class App {
                 div.style.height = channelHeight + 'px';
                 div.style.fontSize = adaptiveFontSize + 'px';
                 div.style.lineHeight = channelHeight + 'px';
+                div.style.position = 'relative';
+
+                // 添加幅度标尺
+                const scalebar = document.createElement('div');
+                scalebar.className = 'scalebar';
+
+                // 中心线
+                const centerLine = document.createElement('div');
+                centerLine.className = 'scalebar-line center';
+                centerLine.style.top = (channelHeight / 2) + 'px';
+                scalebar.appendChild(centerLine);
+
+                // 正峰值参考线
+                const posLine = document.createElement('div');
+                posLine.className = 'scalebar-line';
+                posLine.style.top = (channelHeight / 2 - refOffset) + 'px';
+                scalebar.appendChild(posLine);
+
+                // 负峰值参考线
+                const negLine = document.createElement('div');
+                negLine.className = 'scalebar-line';
+                negLine.style.top = (channelHeight / 2 + refOffset) + 'px';
+                scalebar.appendChild(negLine);
+
+                // 电压标签（只在空间足够时显示）
+                if (channelHeight > 20) {
+                    const label = document.createElement('span');
+                    label.className = 'scalebar-label';
+                    label.style.top = (channelHeight / 2 - refOffset) + 'px';
+                    label.textContent = '+' + this.sensitivityUv + 'μV';
+                    scalebar.appendChild(label);
+
+                    const labelNeg = document.createElement('span');
+                    labelNeg.className = 'scalebar-label';
+                    labelNeg.style.top = (channelHeight / 2 + refOffset) + 'px';
+                    labelNeg.textContent = '-' + this.sensitivityUv + 'μV';
+                    scalebar.appendChild(labelNeg);
+                }
+
+                div.appendChild(scalebar);
 
                 const span = document.createElement('span');
                 span.textContent = ch.name;
