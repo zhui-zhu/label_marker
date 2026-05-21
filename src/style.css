@@ -792,6 +792,10 @@ body {
     z-index: 9999;
 }
 
+.modal-overlay.hidden {
+    display: none;
+}
+
 .modal-box {
     background: var(--bg-panel);
     border: 1px solid var(--border-focus);
@@ -860,6 +864,96 @@ body {
     background: var(--bg-input);
     color: var(--text-secondary);
     border: 1px solid var(--border);
+}
+
+/* FFT 弹窗样式 */
+.fft-modal-box {
+    max-width: 720px;
+    width: 95%;
+    padding: 20px;
+    text-align: left;
+}
+
+.fft-modal-box .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.fft-modal-box .modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.fft-modal-box #fft-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.fft-modal-box #fft-close:hover {
+    color: var(--text-primary);
+}
+
+.fft-controls {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.fft-control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fft-control-group label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.fft-control-group select {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.fft-canvas-container {
+    background: var(--bg-input);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+#fft-canvas {
+    display: block;
+    max-width: 100%;
+}
+
+.fft-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: center;
+    min-height: 18px;
+}
+
+.fft-info .peak-freq {
+    color: var(--accent);
+    font-weight: 600;
 }
 
 .form-input:focus {

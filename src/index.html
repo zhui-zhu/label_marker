@@ -22,6 +22,7 @@
             <div class="toolbar-separator"></div>
             <div class="toolbar-group">
                 <button id="btn-fixed-height" class="btn">固定高度</button>
+                <button id="btn-fft" class="btn">FFT</button>
                 <button id="btn-export" class="btn btn-success">导出</button>
                 <button id="btn-import" class="btn">导入</button>
             </div>
@@ -211,6 +212,41 @@
                 <button id="autosave-btn-restore" class="btn btn-primary">恢复</button>
                 <button id="autosave-btn-discard" class="btn btn-secondary">不恢复</button>
             </div>
+        </div>
+    </div>
+
+    <div id="fft-modal" class="modal-overlay hidden">
+        <div class="modal-box fft-modal-box">
+            <div class="modal-header">
+                <h3 id="fft-title">FFT 功率谱分析</h3>
+                <button id="fft-close" class="btn-sm">&times;</button>
+            </div>
+            <div class="fft-controls">
+                <div class="fft-control-group">
+                    <label>通道:</label>
+                    <select id="fft-channel-select"></select>
+                </div>
+                <div class="fft-control-group">
+                    <label>窗口:</label>
+                    <select id="fft-window-select">
+                        <option value="hann">汉宁窗</option>
+                        <option value="hamming">汉明窗</option>
+                        <option value="blackman">布莱克曼窗</option>
+                        <option value="rectangle">矩形窗</option>
+                    </select>
+                </div>
+                <div class="fft-control-group">
+                    <label>坐标:</label>
+                    <select id="fft-scale-select">
+                        <option value="log">对数 (dB)</option>
+                        <option value="linear">线性</option>
+                    </select>
+                </div>
+            </div>
+            <div class="fft-canvas-container">
+                <canvas id="fft-canvas"></canvas>
+            </div>
+            <div id="fft-info" class="fft-info"></div>
         </div>
     </div>
 </body>

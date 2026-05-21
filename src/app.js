@@ -114,6 +114,7 @@ class App {
         document.getElementById('btn-deselect-all').addEventListener('click', () => this._deselectAllChannels());
         document.getElementById('btn-bipolar').addEventListener('click', () => this._toggleBipolar());
         document.getElementById('btn-fixed-height').addEventListener('click', () => this._toggleFixedHeight());
+        document.getElementById('btn-fft').addEventListener('click', () => this._showFFTPanel());
 
         document.getElementById('btn-channels').addEventListener('click', () => this._toggleChannelPanel());
         document.getElementById('btn-close-channels').addEventListener('click', () => this._hideChannelPanel());
@@ -2068,6 +2069,321 @@ class App {
         if (this.renderer) {
             this.renderer.setAnnotations(this.annotations);
             this.renderer.render();
+        }
+    }
+
+    _showFFTPanel() {
+        if (this.channels.length === 0) {
+            this._setStatus('请先加载 EDF 文件', 'warning');
+            return;
+        }
+        const modal = document.getElementById('fft-modal');
+        modal.classList.remove('hidden');
+
+        const channelSelect = document.getElementById('fft-channel-select');
+        channelSelect.innerHTML = '';
+        const channels = this.showBipolar && this.bipolarChannels
+            ? this.bipolarChannels : this.channels;
+        for (const ch of channels) {
+            const opt = document.createElement('option');
+            opt.value = ch.name;
+            opt.textContent = ch.name;
+            channelSelect.appendChild(opt);
+        }
+
+        document.getElementById('fft-close').onclick = () => {
+            modal.classList.add('hidden');
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.classList.add('hidden');
+        };
+
+        this._updateFFTChart();
+
+        document.getElementById('fft-channel-select').onchange = () => this._updateFFTChart();
+        document.getElementById('fft-window-select').onchange = () => this._updateFFTChart();
+        document.getElementById('fft-scale-select').onchange = () => this._updateFFTChart();
+    }
+
+    _updateFFTChart() {
+        const channelName = document.getElementById('fft-channel-select').value;
+        const windowType = document.getElementById('fft-window-select').value;
+        const scaleType = document.getElementById('fft-scale-select').value;
+
+        const channels = this.showBipolar && this.bipolarChannels
+            ? this.bipolarChannels : this.channels;
+        const channel = channels.find(c => c.name === channelName);
+        if (!channel) return;
+
+        const data = channel.data;
+        const sfreq = channel.sfreq;
+
+        const viewportStart = this.renderer.viewportStart;
+        const viewportEnd = this.renderer.viewportEnd;
+        const startSample = Math.floor(viewportStart * sfreq);
+        const endSample = Math.ceil(viewportEnd * sfreq);
+        const segmentData = data.slice(startSample, endSample);
+
+        const n = segmentData.length;
+        if (n < 2) {
+            document.getElementById('fft-info').textContent = '数据不足，请扩大视口范围';
+            return;
+        }
+
+        const fftSize = this._nextPow2(n);
+        const spectrum = this._computeFFT(segmentData, fftSize, windowType);
+
+        const canvas = document.getElementById('fft-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = canvas.parentElement;
+        
+        const containerWidth = container.clientWidth - 24; // 减去 padding
+        const w = Math.max(300, containerWidth);
+        const h = 300;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        ctx.scale(dpr, dpr);
+
+        const padding = { top: 20, right: 20, bottom: 45, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        ctx.fillStyle = '#0a1628';
+        ctx.fillRect(0, 0, w, h);
+
+        const maxFreq = Math.min(sfreq / 2, 100);
+        const freqResolution = (sfreq / 2) / (fftSize / 2);
+        const startFreq = 0.5;
+
+        let peaks = [];
+        let maxPower = -Infinity;
+        let minPower = Infinity;
+
+        for (let i = 1; i < fftSize / 2; i++) {
+            const freq = i * freqResolution;
+            if (freq > maxFreq) break;
+            if (freq < startFreq) continue;
+            let power = spectrum[i];
+            if (scaleType === 'log') {
+                power = 10 * Math.log10(power + 1e-10);
+            }
+            peaks.push({ freq, power, linearPower: spectrum[i] });
+            if (power > maxPower) maxPower = power;
+            if (power < minPower) minPower = power;
+        }
+
+        if (maxPower === -Infinity || peaks.length === 0) {
+            document.getElementById('fft-info').textContent = '数据不足或计算错误';
+            return;
+        }
+
+        const yRange = Math.max(maxPower - minPower, 1);
+        const yMin = minPower - yRange * 0.05;
+
+        const xScale = (freq) => padding.left + (freq / maxFreq) * plotW;
+        const yScale = (power) => {
+            const normalized = (power - yMin) / yRange;
+            return padding.top + (1 - Math.min(1, Math.max(0, normalized))) * plotH;
+        };
+
+        ctx.strokeStyle = '#1e3a5f';
+        ctx.lineWidth = 1;
+        const freqStep = maxFreq <= 20 ? 5 : maxFreq <= 50 ? 10 : 20;
+        for (let freq = 0; freq <= maxFreq; freq += freqStep) {
+            const x = xScale(freq);
+            if (x >= padding.left && x <= w - padding.right) {
+                ctx.beginPath();
+                ctx.moveTo(x, padding.top);
+                ctx.lineTo(x, h - padding.bottom);
+                ctx.stroke();
+            }
+        }
+
+        // 计算合适的Y轴步长，确保刻度间距至少20像素
+        let yStep = yRange / 10;
+        if (scaleType === 'log') {
+            yStep = yRange <= 20 ? 5 : yRange <= 50 ? 10 : 20;
+        } else {
+            // 线性坐标：使用科学计数法友好的步长
+            const magnitude = Math.pow(10, Math.floor(Math.log10(yStep)));
+            const normalized = yStep / magnitude;
+            if (normalized < 2) yStep = 2 * magnitude;
+            else if (normalized < 5) yStep = 5 * magnitude;
+            else yStep = 10 * magnitude;
+            yStep = Math.max(yStep, magnitude * 0.01); // 防止步长太小
+        }
+        
+        // 计算第一个刻度值
+        const firstYTick = Math.ceil(yMin / yStep) * yStep;
+        for (let val = firstYTick; val <= maxPower; val += yStep) {
+            const y = yScale(val);
+            if (y >= padding.top && y <= h - padding.bottom) {
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(w - padding.right, y);
+                ctx.stroke();
+            }
+        }
+
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let first = true;
+        for (let i = 0; i < peaks.length; i++) {
+            const { freq, power } = peaks[i];
+            const x = xScale(freq);
+            const y = yScale(power);
+            if (first) {
+                ctx.moveTo(x, y);
+                first = false;
+            } else {
+                ctx.lineTo(x, y);
+            }
+        }
+        ctx.stroke();
+
+        const threshold = maxPower - (yRange * 0.25);
+        const topPeaks = peaks.filter(p => p.power >= threshold).sort((a, b) => b.power - a.power).slice(0, 3);
+
+        ctx.fillStyle = '#ff6b6b';
+        for (const peak of topPeaks) {
+            const x = xScale(peak.freq);
+            const y = yScale(peak.power);
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.fillStyle = '#7ba3c4';
+        ctx.font = '10px Cascadia Code, Consolas, monospace';
+        ctx.textAlign = 'center';
+        for (let freq = 0; freq <= maxFreq; freq += freqStep) {
+            const x = xScale(freq);
+            if (x >= padding.left && x <= w - padding.right - 20) {
+                ctx.fillText(freq + '', x, h - padding.bottom + 14);
+            }
+        }
+        ctx.fillText('Frequency (Hz)', w / 2, h - 5);
+
+        ctx.textAlign = 'right';
+        ctx.save();
+        ctx.translate(12, h / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText(scaleType === 'log' ? 'Power (dB)' : 'Power', 0, 0);
+        ctx.restore();
+
+        // Y轴标签绘制，使用智能格式化
+        const formatValue = (val) => {
+            if (Math.abs(val) < 0.001 && val !== 0) return val.toExponential(1);
+            if (Math.abs(val) >= 1e6) return val.toExponential(1);
+            if (Math.abs(val) >= 1000) return val.toFixed(0);
+            if (Math.abs(val) >= 1) return val.toFixed(1);
+            return val.toFixed(3);
+        };
+
+        for (let val = firstYTick; val <= maxPower; val += yStep) {
+            const y = yScale(val);
+            if (y >= padding.top + 10 && y <= h - padding.bottom - 5) {
+                ctx.fillText(formatValue(val), padding.left - 6, y + 4);
+            }
+        }
+
+        let peakText = '无明显峰值';
+        if (topPeaks.length > 0) {
+            const top = topPeaks[0];
+            peakText = `峰值频率: <span class="peak-freq">${top.freq.toFixed(1)} Hz</span> (${top.power.toFixed(1)} ${scaleType === 'log' ? 'dB' : 'V'})`;
+        }
+        document.getElementById('fft-info').innerHTML = peakText;
+    }
+
+    _nextPow2(n) {
+        let p = 1;
+        while (p < n) p *= 2;
+        return p;
+    }
+
+    _applyWindow(data, type) {
+        const n = data.length;
+        const windowed = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            let w = 1;
+            if (type === 'hann') {
+                w = 0.5 * (1 - Math.cos(2 * Math.PI * i / (n - 1)));
+            } else if (type === 'hamming') {
+                w = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1));
+            } else if (type === 'blackman') {
+                w = 0.42 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)) + 0.08 * Math.cos(4 * Math.PI * i / (n - 1));
+            }
+            windowed[i] = data[i] * w;
+        }
+        return windowed;
+    }
+
+    _computeFFT(data, fftSize, windowType) {
+        const n = data.length;
+        const real = new Float64Array(fftSize);
+        const imag = new Float64Array(fftSize);
+
+        const windowed = this._applyWindow(data, windowType);
+        for (let i = 0; i < n; i++) {
+            real[i] = windowed[i];
+        }
+
+        this._fft(real, imag);
+
+        const spectrum = new Float64Array(fftSize / 2);
+        for (let i = 0; i < fftSize / 2; i++) {
+            spectrum[i] = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+        }
+        return spectrum;
+    }
+
+    _fft(real, imag) {
+        const n = real.length;
+        if (n <= 1) return;
+
+        for (let i = 0, j = 0; i < n; i++) {
+            if (i < j) {
+                let temp = real[i];
+                real[i] = real[j];
+                real[j] = temp;
+                temp = imag[i];
+                imag[i] = imag[j];
+                imag[j] = temp;
+            }
+            let k = n >> 1;
+            for (; (k >= 1) && (j >= k); k >>= 1) {
+                j -= k;
+            }
+            if (k >= 1) j += k;
+        }
+
+        for (let len = 2; len <= n; len <<= 1) {
+            const halfLen = len >> 1;
+            const angle = -2 * Math.PI / len;
+            const wReal = Math.cos(angle);
+            const wImag = Math.sin(angle);
+            for (let i = 0; i < n; i += len) {
+                let uReal = 1;
+                let uImag = 0;
+                for (let jj = 0; jj < halfLen; jj++) {
+                    const tReal = uReal * real[i + jj + halfLen] - uImag * imag[i + jj + halfLen];
+                    const tImag = uReal * imag[i + jj + halfLen] + uImag * real[i + jj + halfLen];
+                    real[i + jj + halfLen] = real[i + jj] - tReal;
+                    imag[i + jj + halfLen] = imag[i + jj] - tImag;
+                    real[i + jj] += tReal;
+                    imag[i + jj] += tImag;
+                    const tempReal = uReal * wReal - uImag * wImag;
+                    const tempImag = uReal * wImag + uImag * wReal;
+                    uReal = tempReal;
+                    uImag = tempImag;
+                }
+            }
         }
     }
 }
