@@ -224,6 +224,7 @@ class App {
         });
 
         document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
             if (e.key === 'Escape') {
                 this.annotationMode = false;
                 this.annoStart = null;
@@ -234,9 +235,25 @@ class App {
                 this._updateAnnoModeButton();
                 this._updateStepUI();
             }
+            if (e.key === 'PageUp' && this.edfData) {
+                e.preventDefault();
+                this._panViewport(0.5);
+            }
+            if (e.key === 'PageDown' && this.edfData) {
+                e.preventDefault();
+                this._panViewport(-0.5);
+            }
+            if ((e.key === 'ArrowUp' || e.key === 'ArrowRight') && this.edfData) {
+                e.preventDefault();
+                this._panViewport(0.5);
+            }
+            if ((e.key === 'ArrowDown' || e.key === 'ArrowLeft') && this.edfData) {
+                e.preventDefault();
+                this._panViewport(-0.5);
+            }
             if (e.key === ' ' && this.edfData) {
                 e.preventDefault();
-                this._fitToWindow();
+                this._panViewport(1);
             }
             if (e.ctrlKey && e.key === 'z') {
                 e.preventDefault();
@@ -1747,6 +1764,25 @@ class App {
     _fitToWindow() {
         if (!this.edfData) return;
         this.renderer.setViewport(0, this.duration);
+    }
+
+    _panViewport(fraction) {
+        if (!this.edfData) return;
+        const windowDuration = this.renderer.viewportEnd - this.renderer.viewportStart;
+        const delta = windowDuration * fraction;
+        let newStart = this.renderer.viewportStart + delta;
+        let newEnd = this.renderer.viewportEnd + delta;
+        // 确保不超出范围
+        if (newEnd > this.duration) {
+            newEnd = this.duration;
+            newStart = newEnd - windowDuration;
+        }
+        if (newStart < 0) {
+            newStart = 0;
+            newEnd = newStart + windowDuration;
+        }
+        this.renderer.setViewport(newStart, newEnd);
+        this._updateTimeDisplay(newStart, newEnd);
     }
 
     _setStatus(message, type) {
