@@ -125,6 +125,20 @@ class App {
             this.renderer.setViewportDuration(val);
         });
 
+        document.getElementById('goto-time').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const timeStr = e.target.value.trim();
+                const parsed = this._parseTime(timeStr);
+                if (parsed) {
+                    const currentCenter = (this.renderer.viewportStart + this.renderer.viewportEnd) / 2;
+                    const newCenter = parsed.type === 'add' ? currentCenter + parsed.value : parsed.value;
+                    this._gotoTime(parsed);
+                    e.target.value = '';
+                    e.target.placeholder = this._formatTime(newCenter);
+                }
+            }
+        });
+
         document.getElementById('notch-select').addEventListener('change', () => this._applyFilters());
         document.getElementById('highpass-select').addEventListener('change', () => this._applyFilters());
         document.getElementById('lowpass-select').addEventListener('change', () => this._applyFilters());
@@ -1759,6 +1773,63 @@ class App {
         } catch {
             return null;
         }
+    }
+
+    _parseTime(timeStr) {
+        if (!timeStr || typeof timeStr !== 'string') return null;
+        // 如果包含冒号，解析为绝对时间（HH:MM:SS 或 H:MM:SS）
+        if (timeStr.includes(':')) {
+            // 有 recordingStart 时，解析为绝对时间
+            if (this.recordingStart) {
+                const parts = timeStr.split(':');
+                if (parts.length === 3) {
+                    const h = parseInt(parts[0]);
+                    const m = parseInt(parts[1]);
+                    const s = parseFloat(parts[2]);
+                    if (isNaN(h) || isNaN(m) || isNaN(s)) return null;
+                    const targetDate = new Date(this.recordingStart);
+                    targetDate.setHours(h, m, Math.floor(s), (s % 1) * 1000);
+                    const diffMs = targetDate.getTime() - this.recordingStart.getTime();
+                    return { type: 'goto', value: diffMs / 1000 };
+                }
+            }
+            return null;
+        }
+        // 不含冒号，解析为从当前时间加的秒数
+        const delta = parseFloat(timeStr);
+        if (isNaN(delta)) return null;
+        return { type: 'add', value: delta };
+    }
+
+    _gotoTime(parsed) {
+        if (!parsed) return;
+        const { type, value } = parsed;
+        const windowDuration = this.renderer.viewportEnd - this.renderer.viewportStart;
+        let targetSeconds;
+        if (type === 'add') {
+            // 从当前时间加上 delta 秒
+            const currentCenter = (this.renderer.viewportStart + this.renderer.viewportEnd) / 2;
+            targetSeconds = currentCenter + value;
+        } else {
+            // 跳转到绝对时间
+            targetSeconds = value;
+        }
+        // 限制在有效范围内
+        targetSeconds = Math.max(0, Math.min(this.duration, targetSeconds));
+        let newStart = targetSeconds - windowDuration / 2;
+        let newEnd = targetSeconds + windowDuration / 2;
+        // 确保不超出范围
+        if (newEnd > this.duration) {
+            newEnd = this.duration;
+            newStart = newEnd - windowDuration;
+        }
+        if (newStart < 0) {
+            newStart = 0;
+            newEnd = newStart + windowDuration;
+        }
+        this.renderer.setViewport(newStart, newEnd);
+        this._updateTimeDisplay(newStart, newEnd);
+        this._setStatus(`已${type === 'add' ? '加' : '跳转'}到 ${this._formatTime(targetSeconds)}`, 'info');
     }
 
     _formatTime(seconds) {
