@@ -271,6 +271,31 @@ class App {
         document.addEventListener('mousemove', (e) => this._onLassoMove(e));
         document.addEventListener('mouseup', (e) => this._onLassoEnd(e));
 
+        // 拖拽文件打开
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                for (const file of files) {
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    if (ext === 'edf' || ext === 'bdf') {
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            this._loadEDFFromArrayBuffer(ev.target.result, file.name, file.size);
+                        };
+                        reader.readAsArrayBuffer(file);
+                    } else {
+                        this._setStatus(`不支持的文件类型: .${ext}`, 'error');
+                    }
+                }
+            }
+        });
+
         window.addEventListener('resize', () => {
             if (this.renderer) {
                 this.renderer._resize();
