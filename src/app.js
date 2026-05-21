@@ -1664,6 +1664,10 @@ class App {
         this.renderer.render();
         this._updateChannelLabels();
         this._updateStepUI();
+        // 如果 autosave 已停止，导出后再标注则重新启动
+        if (!this._autosaveTimer) {
+            this._startAutosave();
+        }
         this._doAutosave();
     }
 
@@ -1775,6 +1779,7 @@ class App {
             if (result) {
                 this._setStatus(`已导出 ${this.annotations.length} 条标注`, 'success');
                 await window.electronAPI.clearAutosave(this.currentFile);
+                this._stopAutosave();
             }
             return;
         }
