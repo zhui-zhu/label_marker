@@ -1638,9 +1638,12 @@ class App {
             }
         }
 
+        const note = document.getElementById('anno-note').value.trim();
+
         this.annotations.push({
             start, end, label, channel,
             originalChannel,
+            note,
         });
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
@@ -1655,6 +1658,7 @@ class App {
         this.annoEndTime = null;
         document.getElementById('anno-start').value = '';
         document.getElementById('anno-end').value = '';
+        document.getElementById('anno-note').value = '';
         this.selectedAnnoChannel = null;
         this.renderer.setSelectedChannel(null);
         this.renderer.render();
@@ -1712,6 +1716,14 @@ class App {
             labelSpan.className = 'anno-label';
             labelSpan.textContent = ann.label;
 
+            if (ann.note) {
+                const noteSpan = document.createElement('span');
+                noteSpan.className = 'anno-note';
+                noteSpan.textContent = ann.note;
+                noteSpan.title = ann.note;
+                row.appendChild(noteSpan);
+            }
+
             const delBtn = document.createElement('button');
             delBtn.className = 'anno-delete';
             delBtn.textContent = '×';
@@ -1737,17 +1749,19 @@ class App {
             `# File: ${this.currentFile || 'unknown'}`,
             `# Exported: ${new Date().toISOString()}`,
             '#',
-            'Channel\tStart\tEnd\tLabel',
+            'Channel\tStart\tEnd\tLabel\tNote',
             '',
         ];
 
         for (const ann of this.annotations) {
             const ch = ann.originalChannel || ann.channel || 'ALL';
+            const note = ann.note || '';
             lines.push(
                 `${ch}\t` +
                 `${this._formatTime(ann.start)}\t` +
                 `${this._formatTime(ann.end)}\t` +
-                `${ann.label}`
+                `${ann.label}\t` +
+                `${note}`
             );
         }
 
@@ -1820,6 +1834,7 @@ class App {
                 const startStr = parts[1];
                 const endStr = parts[2];
                 const label = parts[3] || 'other';
+                const note = parts[4] || '';
 
                 let start = this._parseAbsoluteTime(startStr);
                 let end = this._parseAbsoluteTime(endStr);
@@ -1834,7 +1849,7 @@ class App {
                         ? rawChannel : rawChannel;
                     this.annotations.push({
                         start, end, label, channel,
-                        originalChannel,
+                        originalChannel, note,
                     });
                     count++;
                 }
@@ -1848,8 +1863,10 @@ class App {
                     channel = parts[2] === '全部' ? '' : parts[2];
                 }
 
+                const note = parts.length >= 5 ? parts[4] : '';
+
                 if (!isNaN(start) && !isNaN(end) && end > start) {
-                    this.annotations.push({ start, end, label, channel });
+                    this.annotations.push({ start, end, label, channel, note });
                     count++;
                 }
             }

@@ -918,6 +918,19 @@ body {
     color: var(--accent);
 }
 
+.anno-note {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(76, 175, 80, 0.15);
+    color: #4caf50;
+    margin-left: 4px;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .anno-delete {
     background: none;
     border: none;
