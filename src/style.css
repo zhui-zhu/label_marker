@@ -970,6 +970,11 @@ body {
     border-bottom: 1px solid var(--border);
 }
 
+.anno-header-actions {
+    display: flex;
+    gap: 4px;
+}
+
 .annotations-list {
     flex: 1;
     overflow-y: auto;
@@ -1069,4 +1074,191 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
+}
+
+/* 标注类型设置面板 */
+.label-types-modal-box {
+    max-width: 400px;
+    width: 95%;
+    padding: 16px;
+    text-align: left;
+}
+
+.label-types-modal-box .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.label-types-modal-box .modal-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.modal-close-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0;
+    border-radius: 4px;
+}
+
+.label-types-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.label-types-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-input);
+}
+
+.label-type-row {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    gap: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.label-type-row:last-child {
+    border-bottom: none;
+}
+
+.label-color-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    cursor: pointer;
+    flex-shrink: 0;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    transition: transform 0.15s, border-color 0.15s;
+}
+
+.label-color-dot:hover {
+    transform: scale(1.15);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.label-type-name {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.label-type-name:hover {
+    color: var(--accent);
+}
+
+.label-name-input {
+    flex: 1;
+    padding: 2px 6px;
+    font-size: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    color: var(--text-primary);
+    outline: none;
+}
+
+.label-types-hint {
+    margin-top: 10px;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: center;
+    font-style: italic;
+}
+
+/* 颜色选择器弹窗 */
+.color-picker-popup {
+    position: fixed;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 10000;
+}
+
+.color-picker-popup.hidden {
+    display: none;
+}
+
+/* 自定义确认对话框 */
+.confirm-dialog-box {
+    max-width: 340px;
+    text-align: center;
+}
+
+.confirm-dialog-box p {
+    margin: 16px 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+
+.confirm-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 8px;
+}
+
+.confirm-actions .btn {
+    min-width: 80px;
+}
+
+.color-picker-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.1s;
+}
+
+.color-picker-btn:hover {
+    transform: scale(1.1);
+    border-color: white;
+}
+
+.btn-secondary {
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    border-color: var(--border);
+}
+
+.btn-secondary:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+.btn-move {
+    width: 24px;
+    padding: 2px;
+    font-size: 10px;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+}
+
+.btn-move:hover:not(:disabled) {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+.btn-move:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
 }

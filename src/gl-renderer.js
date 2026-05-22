@@ -492,6 +492,10 @@ class GLRenderer {
         gl.bindVertexArray(null);
     }
 
+    setLabelColors(colors) {
+        this.LABEL_COLORS = colors;
+    }
+
     getChannelAtMouse(mouseY) {
         if (this.channels.length === 0) return null;
         const rect = this.canvas.getBoundingClientRect();

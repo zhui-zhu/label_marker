@@ -24,11 +24,423 @@ class App {
         this.undoStack = [];
         this.redoStack = [];
         this._autosaveTimer = null;
+        this._confirmResolver = null;
+
+        // 标注类型管理器
+        this._labelTypes = this._loadLabelTypes();
 
         this._initRenderer();
         this._bindEvents();
         this._bindElectronAPI();
+        this._updateLabelSelect();
         this._updateStepUI();
+    }
+
+    // 标注类型默认配置
+    static DEFAULT_LABEL_TYPES = [
+        { id: 'lvfa', name: 'LVFA', color: [0.2, 0.6, 1.0] },
+        { id: 'pre-ictal', name: '发作前期', color: [1.0, 0.85, 0.2] },
+        { id: 'inter-ictal', name: '发作间期', color: [0.3, 0.85, 0.3] },
+        { id: 'ictal', name: '发作期', color: [1.0, 0.4, 0.3] },
+        { id: 'post-ictal', name: '发作后期', color: [0.7, 0.4, 1.0] },
+        { id: 'other', name: '其他', color: [0.6, 0.6, 0.6] },
+    ];
+
+    // 添加标注类型时的可选颜色（固定列表，不会和默认颜色重复）
+    static NEW_LABEL_COLORS = [
+        [0.2, 0.8, 0.8],   // 青色
+        [1.0, 0.6, 0.2],   // 橙色
+        [1.0, 0.4, 0.8],   // 粉色
+        [0.4, 0.9, 0.5],   // 浅绿
+        [0.9, 0.3, 0.3],   // 深红
+        [0.3, 0.7, 0.9],   // 天蓝
+        [0.5, 0.3, 0.9],   // 靛蓝
+        [0.3, 0.9, 0.7],   // 薄荷绿
+        [0.9, 0.5, 0.7],   // 玫瑰
+        [0.7, 0.9, 0.3],   // 酸橙
+        [0.4, 0.5, 0.9],   // 钴蓝
+        [0.9, 0.85, 0.5],  // 奶油色
+        [0.5, 0.8, 0.9],   // 浅蓝
+        [0.98, 0.8, 0.77], // 珊瑚
+        [0.78, 0.94, 0.78], // 薄荷
+        [0.75, 0.75, 0.98], // 薰衣草
+        [0.95, 0.8, 0.98],  // 浅紫
+        [0.95, 0.6, 0.6],   // 印度红
+    ];
+
+    // 颜色选择器用的完整色板
+    static LABEL_COLOR_PALETTE = [
+        // 第一组：基本色
+        [1.0, 0.4, 0.3],   // 红色
+        [0.3, 0.85, 0.3],  // 绿色
+        [0.2, 0.6, 1.0],   // 蓝色
+        [1.0, 0.85, 0.2],  // 黄色
+        [0.7, 0.4, 1.0],   // 紫色
+        [0.2, 0.8, 0.8],   // 青色
+        [1.0, 0.6, 0.2],   // 橙色
+        [0.6, 0.6, 0.6],   // 灰色
+        [1.0, 0.4, 0.8],   // 粉色
+        [0.4, 0.9, 0.5],   // 浅绿
+        // 第二组：扩展色
+        [0.9, 0.3, 0.3],   // 深红
+        [0.3, 0.7, 0.9],   // 天蓝
+        [0.95, 0.7, 0.2],  // 金色
+        [0.5, 0.3, 0.9],   // 靛蓝
+        [0.3, 0.9, 0.7],   // 薄荷绿
+        [0.9, 0.5, 0.7],   // 玫瑰
+        [0.7, 0.9, 0.3],   // 酸橙
+        [0.4, 0.5, 0.9],   // 钴蓝
+        [0.9, 0.85, 0.5],  // 奶油色
+        [0.5, 0.8, 0.9],   // 浅蓝
+        // 第三组：柔和色
+        [0.98, 0.8, 0.77], // 珊瑚
+        [0.78, 0.94, 0.78], // 薄荷
+        [0.75, 0.75, 0.98], // 薰衣草
+        [0.98, 0.95, 0.75], // 杏色
+        [0.75, 0.98, 0.95], // 浅绿松石
+        [0.95, 0.8, 0.98],  // 浅紫
+        [0.8, 0.98, 0.8],   // 浅绿
+    ];
+
+    _loadLabelTypes() {
+        try {
+            const saved = localStorage.getItem('labelTypes');
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (e) {
+            console.warn('加载标注类型配置失败:', e);
+        }
+        return JSON.parse(JSON.stringify(App.DEFAULT_LABEL_TYPES));
+    }
+
+    _saveLabelTypes() {
+        try {
+            localStorage.setItem('labelTypes', JSON.stringify(this._labelTypes));
+        } catch (e) {
+            console.warn('保存标注类型配置失败:', e);
+        }
+    }
+
+    _updateLabelSelect() {
+        const select = document.getElementById('anno-label');
+        if (!select) return;
+        select.innerHTML = '';
+        for (const type of this._labelTypes) {
+            const opt = document.createElement('option');
+            opt.value = type.id;
+            opt.textContent = type.name;
+            select.appendChild(opt);
+        }
+    }
+
+    _getLabelColor(labelId) {
+        const type = this._labelTypes.find(t => t.id === labelId);
+        return type ? type.color : [0.6, 0.6, 0.6];
+    }
+
+    // 自定义确认对话框（替代原生confirm，避免Electron焦点问题）
+    _confirm(message, title = '确认') {
+        return new Promise((resolve) => {
+            const previousFocus = document.activeElement;
+            const dialog = document.getElementById('confirm-dialog');
+            document.getElementById('confirm-title').textContent = title;
+            document.getElementById('confirm-message').textContent = message;
+            dialog.classList.remove('hidden');
+
+            const okBtn = document.getElementById('confirm-ok');
+            const cancelBtn = document.getElementById('confirm-cancel');
+
+            const cleanup = (result) => {
+                dialog.classList.add('hidden');
+                okBtn.onclick = null;
+                cancelBtn.onclick = null;
+                // 恢复焦点到对话框打开前的元素
+                // 避免焦点停留在已隐藏的按钮上，导致后续下拉框无法打开
+                if (previousFocus && typeof previousFocus.focus === 'function') {
+                    try {
+                        previousFocus.focus();
+                    } catch (e) {
+                        // 焦点恢复失败时忽略
+                    }
+                }
+                resolve(result);
+            };
+
+            okBtn.onclick = () => cleanup(true);
+            cancelBtn.onclick = () => cleanup(false);
+        });
+    }
+
+    _showLabelTypesPanel() {
+        const modal = document.getElementById('label-types-modal');
+        modal.classList.remove('hidden');
+        this._renderLabelTypesList();
+    }
+
+    _hideLabelTypesPanel() {
+        const modal = document.getElementById('label-types-modal');
+        this._hideColorPicker();
+        modal.classList.add('hidden');
+        // 关闭面板后将焦点移到标注面板的下拉框
+        // 避免焦点停留在已隐藏的元素上，导致select下拉框无法打开
+        if (this.annoPanelVisible) {
+            const annoLabel = document.getElementById('anno-label');
+            if (annoLabel) {
+                annoLabel.focus();
+            }
+        }
+    }
+
+    _renderLabelTypesList() {
+        const container = document.getElementById('label-types-list');
+        const n = this._labelTypes.length;
+        
+        // 使用 innerHTML 批量渲染，提高性能
+        container.innerHTML = this._labelTypes.map((type, i) => {
+            const colorRgb = `${type.color[0]*255},${type.color[1]*255},${type.color[2]*255}`;
+            const upDisabled = i === 0 ? 'disabled' : '';
+            const downDisabled = i === n - 1 ? 'disabled' : '';
+            return `
+                <div class="label-type-row" data-index="${i}">
+                    <button class="btn-sm btn-move" data-action="up" data-index="${i}" title="上移" ${upDisabled}>↑</button>
+                    <button class="btn-sm btn-move" data-action="down" data-index="${i}" title="下移" ${downDisabled}>↓</button>
+                    <span class="label-color-dot" data-action="color" data-index="${i}" style="background-color: rgb(${colorRgb});"></span>
+                    <span class="label-type-name" data-action="edit" data-index="${i}">${type.name}</span>
+                    <button class="btn-sm" data-action="edit" data-index="${i}">编辑</button>
+                    <button class="btn-sm btn-danger" data-action="delete" data-index="${i}">删除</button>
+                </div>
+            `;
+        }).join('');
+
+        // 使用事件委托处理点击
+        container.onclick = (e) => {
+            const action = e.target.dataset.action;
+            const index = parseInt(e.target.dataset.index);
+            if (action === 'up') this._moveLabelType(index, -1);
+            else if (action === 'down') this._moveLabelType(index, 1);
+            else if (action === 'color') this._showColorPicker(index, e);
+            else if (action === 'edit') this._editLabelTypeName(index);
+            else if (action === 'delete') this._deleteLabelType(index);
+        };
+
+        // 双击编辑名称
+        container.ondblclick = (e) => {
+            if (e.target.classList.contains('label-type-name')) {
+                const index = parseInt(e.target.dataset.index);
+                this._editLabelTypeName(index);
+            }
+        };
+    }
+
+    _showColorPicker(index, e) {
+        const type = this._labelTypes[index];
+        let picker = document.getElementById('color-picker');
+        if (!picker) {
+            picker = document.createElement('div');
+            picker.id = 'color-picker';
+            picker.className = 'color-picker-popup hidden';
+            document.body.appendChild(picker);
+        }
+
+        picker.innerHTML = App.LABEL_COLOR_PALETTE.map((color, i) => 
+            `<button class="color-picker-btn" data-color-index="${i}" style="background-color: rgb(${color[0]*255},${color[1]*255},${color[2]*255});"></button>`
+        ).join('');
+
+        // 点击色板内部按钮选择颜色
+        picker.onclick = (ev) => {
+            ev.stopPropagation();
+            const colorIndex = parseInt(ev.target.dataset.colorIndex);
+            if (!isNaN(colorIndex)) {
+                this._labelTypes[index].color = App.LABEL_COLOR_PALETTE[colorIndex];
+                this._saveLabelTypes();
+                this._renderLabelTypesList();
+                this._applyLabelColors();
+                this._hideColorPicker();
+            }
+        };
+
+        const rect = e.target.getBoundingClientRect();
+        picker.style.top = (rect.bottom + 5) + 'px';
+        picker.style.left = rect.left + 'px';
+        picker.classList.remove('hidden');
+
+        // 点击色板外部关闭
+        const hidePicker = (ev) => {
+            if (!picker.contains(ev.target)) {
+                this._hideColorPicker();
+                document.removeEventListener('click', hidePicker);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', hidePicker), 0);
+    }
+
+    _hideColorPicker() {
+        const picker = document.getElementById('color-picker');
+        if (picker) picker.classList.add('hidden');
+    }
+
+    _editLabelTypeName(index) {
+        const type = this._labelTypes[index];
+        const nameSpan = document.querySelectorAll('.label-type-name')[index];
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'label-name-input';
+        input.value = type.name;
+        input.maxLength = 20;
+
+        const finish = () => {
+            const newName = input.value.trim();
+            if (newName) {
+                type.name = newName;
+                this._saveLabelTypes();
+                this._updateLabelSelect();
+                this._renderLabelTypesList();
+            } else {
+                this._renderLabelTypesList();
+            }
+        };
+
+        input.addEventListener('blur', finish);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') input.blur();
+            if (e.key === 'Escape') this._renderLabelTypesList();
+        });
+
+        nameSpan.replaceWith(input);
+        input.focus();
+        input.select();
+    }
+
+    _editLabelType(index) {
+        this._editLabelTypeName(index);
+    }
+
+    async _deleteLabelType(index) {
+        if (this._labelTypes.length <= 1) {
+            this._setStatus('至少需要保留一个标注类型', 'warning');
+            return;
+        }
+        const type = this._labelTypes[index];
+        const ok = await this._confirm(`确定删除标注类型"${type.name}"吗？`, '删除确认');
+        if (ok) {
+            this._labelTypes.splice(index, 1);
+            this._saveLabelTypes();
+            this._updateLabelSelect();
+            this._renderLabelTypesList();
+            this._applyLabelColors();
+            this._setStatus(`已删除标注类型: ${type.name}`, 'info');
+        }
+    }
+
+    _moveLabelType(index, direction) {
+        const newIndex = index + direction;
+        if (newIndex < 0 || newIndex >= this._labelTypes.length) return;
+
+        const temp = this._labelTypes[index];
+        this._labelTypes[index] = this._labelTypes[newIndex];
+        this._labelTypes[newIndex] = temp;
+
+        this._saveLabelTypes();
+        this._updateLabelSelect();
+        this._renderLabelTypesList();
+    }
+
+    _addLabelType() {
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-box" style="max-width: 340px; padding: 20px;">
+                <h3 style="margin: 0 0 16px 0; font-size: 14px; color: var(--text-primary);">添加标注类型</h3>
+                <input type="text" id="new-label-type-name" class="form-input" 
+                       placeholder="输入名称..." maxlength="20" style="width: 100%; margin-bottom: 12px;">
+                <div style="margin-bottom: 12px;">
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">选择颜色:</div>
+                    <div id="add-color-options" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                    <button id="cancel-add-type" class="btn btn-secondary" style="flex: 1;">取消</button>
+                    <button id="confirm-add-type" class="btn btn-primary" style="flex: 1;">确定</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+
+        let selectedColor = App.NEW_LABEL_COLORS[0];
+
+        const input = modal.querySelector('#new-label-type-name');
+        const colorContainer = modal.querySelector('#add-color-options');
+        const confirmBtn = modal.querySelector('#confirm-add-type');
+        const cancelBtn = modal.querySelector('#cancel-add-type');
+
+        // 渲染颜色选项
+        const renderColors = () => {
+            colorContainer.innerHTML = '';
+            for (const color of App.NEW_LABEL_COLORS) {
+                const btn = document.createElement('button');
+                btn.className = 'color-picker-btn';
+                btn.style.backgroundColor = `rgb(${color[0]*255},${color[1]*255},${color[2]*255})`;
+                if (color[0] === selectedColor[0] && color[1] === selectedColor[1] && color[2] === selectedColor[2]) {
+                    btn.style.border = '2px solid white';
+                }
+                btn.addEventListener('click', () => {
+                    selectedColor = color;
+                    renderColors();
+                });
+                colorContainer.appendChild(btn);
+            }
+        };
+        renderColors();
+
+        input.focus();
+
+        const closeAndAdd = () => {
+            const name = input.value.trim();
+            if (name) {
+                let id = name.toLowerCase().replace(/\s+/g, '-');
+                let counter = 1;
+                while (this._labelTypes.find(t => t.id === id)) {
+                    id = `${name.toLowerCase().replace(/\s+/g, '-')}-${counter++}`;
+                }
+
+                this._labelTypes.push({ id, name, color: selectedColor });
+                this._saveLabelTypes();
+                this._updateLabelSelect();
+                this._renderLabelTypesList();
+                this._applyLabelColors();
+                this._setStatus(`已添加标注类型: ${name}`, 'success');
+            }
+            document.body.removeChild(modal);
+        };
+
+        confirmBtn.addEventListener('click', closeAndAdd);
+        cancelBtn.addEventListener('click', () => document.body.removeChild(modal));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') closeAndAdd();
+            if (e.key === 'Escape') document.body.removeChild(modal);
+        });
+    }
+
+    async _resetLabelTypes() {
+        const ok = await this._confirm('确定重置为默认标注类型吗？所有自定义类型将被删除。', '重置确认');
+        if (ok) {
+            this._labelTypes = JSON.parse(JSON.stringify(App.DEFAULT_LABEL_TYPES));
+            this._saveLabelTypes();
+            this._updateLabelSelect();
+            this._renderLabelTypesList();
+            this._applyLabelColors();
+            this._setStatus('已重置为默认标注类型', 'info');
+        }
+    }
+
+    _applyLabelColors() {
+        if (this.renderer) {
+            const colors = {};
+            for (const type of this._labelTypes) {
+                colors[type.id] = type.color;
+            }
+            this.renderer.setLabelColors(colors);
+        }
     }
 
     _initRenderer() {
@@ -115,6 +527,17 @@ class App {
         document.getElementById('btn-bipolar').addEventListener('click', () => this._toggleBipolar());
         document.getElementById('btn-fixed-height').addEventListener('click', () => this._toggleFixedHeight());
         document.getElementById('btn-fft').addEventListener('click', () => this._showFFTPanel());
+
+        // 标注类型设置面板
+        document.getElementById('btn-label-types').addEventListener('click', () => this._showLabelTypesPanel());
+        document.getElementById('label-types-close').addEventListener('click', () => this._hideLabelTypesPanel());
+        document.getElementById('btn-add-label-type').addEventListener('click', () => this._addLabelType());
+        document.getElementById('btn-reset-label-types').addEventListener('click', () => this._resetLabelTypes());
+        
+        // 点击modal背景关闭
+        document.getElementById('label-types-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'label-types-modal') this._hideLabelTypesPanel();
+        });
 
         document.getElementById('btn-channels').addEventListener('click', () => this._toggleChannelPanel());
         document.getElementById('btn-close-channels').addEventListener('click', () => this._hideChannelPanel());
@@ -664,6 +1087,9 @@ class App {
             if (!ad) return;
             this._showAutosaveModal(ad, fileName);
         });
+
+        // 应用标注类型颜色
+        this._applyLabelColors();
     }
 
     _showAutosaveModal(ad, fileName) {
@@ -1717,9 +2143,19 @@ class App {
                 row.appendChild(timeSpan);
             }
 
+            // 查找标签类型名称和颜色
+            const labelType = this._labelTypes.find(t => t.id === ann.label);
+            const labelName = labelType ? labelType.name : ann.label;
+            const labelColor = labelType ? labelType.color : [0.6, 0.6, 0.6];
+
             const labelSpan = document.createElement('span');
             labelSpan.className = 'anno-label';
-            labelSpan.textContent = ann.label;
+            labelSpan.textContent = labelName;
+            // 设置标签颜色（内联样式优先级高于 class）
+            labelSpan.style.backgroundColor =
+                `rgba(${labelColor[0]*255},${labelColor[1]*255},${labelColor[2]*255},0.25)`;
+            labelSpan.style.borderLeft = `3px solid rgb(${labelColor[0]*255},${labelColor[1]*255},${labelColor[2]*255})`;
+            labelSpan.style.color = `rgb(${labelColor[0]*255},${labelColor[1]*255},${labelColor[2]*255})`;
 
             if (ann.note) {
                 const noteSpan = document.createElement('span');

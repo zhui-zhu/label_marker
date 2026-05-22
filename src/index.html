@@ -194,7 +194,10 @@
                 </div>
                 <div class="anno-list-header">
                     <span id="anno-count">标注: 0</span>
-                    <button id="btn-clear-annos" class="btn-sm btn-danger">清空</button>
+                    <div class="anno-header-actions">
+                        <button id="btn-label-types" class="btn-sm" title="标注类型设置 ⚙">⚙</button>
+                        <button id="btn-clear-annos" class="btn-sm btn-danger">清空</button>
+                    </div>
                 </div>
                 <div id="annotations-list" class="annotations-list"></div>
             </aside>
@@ -247,6 +250,36 @@
                 <canvas id="fft-canvas"></canvas>
             </div>
             <div id="fft-info" class="fft-info"></div>
+        </div>
+    </div>
+
+    <!-- 标注类型设置面板 -->
+    <div id="label-types-modal" class="modal-overlay hidden">
+        <div class="modal-box label-types-modal-box">
+            <div class="modal-header">
+                <h3>标注类型设置</h3>
+                <button id="label-types-close" class="btn-sm modal-close-btn" title="关闭">&times;</button>
+            </div>
+            <div class="label-types-toolbar">
+                <button id="btn-add-label-type" class="btn btn-primary">+ 添加类型</button>
+                <button id="btn-reset-label-types" class="btn btn-secondary">重置默认</button>
+            </div>
+            <div id="label-types-list" class="label-types-list"></div>
+            <div class="label-types-hint">提示：双击名称可编辑 │ 点击颜色圆点换颜色 │ ↑↓ 调整顺序</div>
+        </div>
+    </div>
+
+    <!-- 自定义确认对话框（替代原生confirm） -->
+    <div id="confirm-dialog" class="modal-overlay hidden">
+        <div class="modal-box confirm-dialog-box">
+            <div class="modal-header">
+                <h3 id="confirm-title">确认</h3>
+            </div>
+            <p id="confirm-message"></p>
+            <div class="confirm-actions">
+                <button id="confirm-ok" class="btn btn-danger">确定</button>
+                <button id="confirm-cancel" class="btn btn-secondary">取消</button>
+            </div>
         </div>
     </div>
 </body>
