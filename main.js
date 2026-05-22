@@ -207,6 +207,39 @@ ipcMain.handle('import-annotations', async () => {
     return fs.readFileSync(result.filePaths[0], 'utf-8');
 });
 
+// 坏道导出
+ipcMain.handle('export-bad-channels', async (event, data) => {
+    const result = await dialog.showSaveDialog(mainWindow, {
+        title: '导出坏道标记',
+        defaultPath: data.fileName ? data.fileName.replace(/\.edf$/i, '') + '_bad.txt' : 'badchannels.txt',
+        filters: [
+            { name: '文本文件', extensions: ['txt'] },
+            { name: 'CSV文件', extensions: ['csv'] },
+        ],
+    });
+
+    if (result.canceled) return false;
+
+    fs.writeFileSync(result.filePath, data.content, 'utf-8');
+    return true;
+});
+
+// 坏道导入
+ipcMain.handle('import-bad-channels', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+        title: '导入坏道标记',
+        filters: [
+            { name: '坏道文件', extensions: ['txt', 'csv'] },
+            { name: '所有文件', extensions: ['*'] },
+        ],
+        properties: ['openFile'],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) return null;
+
+    return fs.readFileSync(result.filePaths[0], 'utf-8');
+});
+
 function getAutosavePath(edfFileName) {
     const autosaveDir = path.join(app.getPath('userData'), 'autosave');
     if (!fs.existsSync(autosaveDir)) {

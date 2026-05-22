@@ -13,10 +13,11 @@ class App {
         this.annoStartTime = null;
         this.annoEndTime = null;
         this.channelPanelVisible = false;
+        this.filterBadChannels = false;
         this.annoPanelVisible = false;
         this.selectedAnnoChannel = null;
         this.annoStep = 0;
-        this.invalidChannels = new Set();
+        this.badChannels = new Map();
         this.sensitivityUv = 100;
         this.originalChannels = null;
         this.recordingStart = null;
@@ -522,11 +523,13 @@ class App {
             this._updateStepUI();
         });
         document.getElementById('channel-search').addEventListener('input', () => this._filterChannels());
+        document.getElementById('btn-filter-bad').addEventListener('click', () => this._toggleBadChannelFilter());
         document.getElementById('btn-select-all').addEventListener('click', () => this._selectAllChannels());
         document.getElementById('btn-deselect-all').addEventListener('click', () => this._deselectAllChannels());
         document.getElementById('btn-bipolar').addEventListener('click', () => this._toggleBipolar());
         document.getElementById('btn-fixed-height').addEventListener('click', () => this._toggleFixedHeight());
         document.getElementById('btn-fft').addEventListener('click', () => this._showFFTPanel());
+        document.getElementById('btn-bad-channels').addEventListener('click', () => this._showBadChannelsPanel());
 
         // 标注类型设置面板
         document.getElementById('btn-label-types').addEventListener('click', () => this._showLabelTypesPanel());
@@ -882,8 +885,23 @@ class App {
         if (tooltip) tooltip.classList.add('hidden');
     }
 
+    // 坏道类型定义
+    static BAD_CHANNEL_TYPES = [
+        { id: 'flat', name: '平坦', color: '#9e9e9e' },
+        { id: 'noisy', name: '噪声', color: '#ff9800' },
+        { id: 'drift', name: '漂移', color: '#2196f3' },
+        { id: 'bridge', name: '桥接', color: '#9c27b0' },
+        { id: 'jump', name: '跳变', color: '#f44336' },
+        { id: 'other', name: '其他', color: '#607d8b' },
+    ];
+
     _evaluateChannelQuality() {
-        this.invalidChannels = new Set();
+        // 保留手动标记的坏道，仅重置自动检测的
+        for (const [name, info] of this.badChannels) {
+            if (info.reason === 'auto') {
+                this.badChannels.delete(name);
+            }
+        }
 
         const channels = this.showBipolar && this.bipolarChannels
             ? this.bipolarChannels : this.channels;
@@ -894,15 +912,15 @@ class App {
         for (const ch of channels) {
             const data = ch.data;
             if (!data || data.length === 0) {
-                this.invalidChannels.add(ch.name);
+                this.badChannels.set(ch.name, {
+                    reason: 'auto', type: 'flat', note: '无数据'
+                });
                 continue;
             }
 
-            let sum = 0;
-            let sumSq = 0;
-            let min = Infinity;
-            let max = -Infinity;
             const len = data.length;
+            let sum = 0, sumSq = 0;
+            let min = Infinity, max = -Infinity;
             for (let i = 0; i < len; i++) {
                 const v = data[i];
                 sum += v;
@@ -915,52 +933,162 @@ class App {
             const std = Math.sqrt(Math.max(0, variance));
             const ptp = max - min;
 
+            // 唯一值计数（检测平坦信号）
             const uniqueSet = new Set();
             for (let i = 0; i < len; i++) {
                 uniqueSet.add(data[i]);
                 if (uniqueSet.size > 10) break;
             }
 
+            // 一阶差分统计（检测跳变/高频噪声）
+            let diffSum = 0, diffMax = 0;
+            for (let i = 1; i < len; i++) {
+                const d = Math.abs(data[i] - data[i - 1]);
+                diffSum += d;
+                if (d > diffMax) diffMax = d;
+            }
+            const meanDiff = diffSum / (len - 1);
+
+            // 直流偏移量（检测漂移）
+            const absMean = Math.abs(mean);
+
             stats.push({
-                name: ch.name, std, ptp,
-                uniqueCount: uniqueSet.size
+                name: ch.name, std, ptp, mean, absMean,
+                uniqueCount: uniqueSet.size,
+                meanDiff, diffMax, data
             });
         }
 
         if (stats.length === 0) return;
 
-        const validStats = stats.filter(s => !this.invalidChannels.has(s.name));
+        const validStats = stats.filter(s => !this.badChannels.has(s.name));
         if (validStats.length === 0) return;
 
+        // 计算中位数基准
         const stds = validStats.map(s => s.std).sort((a, b) => a - b);
         const medianStd = stds[Math.floor(stds.length / 2)];
-
         const ptps = validStats.map(s => s.ptp).sort((a, b) => a - b);
         const medianPtp = ptps[Math.floor(ptps.length / 2)];
+        const diffs = validStats.map(s => s.meanDiff).sort((a, b) => a - b);
+        const medianDiff = diffs[Math.floor(diffs.length / 2)];
 
         if (medianStd <= 0 || medianPtp <= 0) return;
+
+        // 桥接检测：通道间相关系数
+        const bridgePairs = this._detectBridgeChannels(validStats);
 
         for (const s of validStats) {
             const stdRatio = s.std / medianStd;
             const ptpRatio = s.ptp / medianPtp;
+            const diffRatio = s.meanDiff / Math.max(1e-10, medianDiff);
 
+            // 平坦信号
             if (s.uniqueCount <= 10) {
-                this.invalidChannels.add(s.name);
+                this.badChannels.set(s.name, {
+                    reason: 'auto', type: 'flat', note: '信号几乎无变化'
+                });
                 continue;
             }
-            if (stdRatio < 0.5) {
-                this.invalidChannels.add(s.name);
+            // 振幅过低
+            if (stdRatio < 0.5 || ptpRatio < 0.5) {
+                this.badChannels.set(s.name, {
+                    reason: 'auto', type: 'flat', note: '振幅过低'
+                });
                 continue;
             }
-            if (ptpRatio < 0.5) {
-                this.invalidChannels.add(s.name);
-                continue;
-            }
+            // 振幅过高（噪声或饱和）
             if (stdRatio > 50) {
-                this.invalidChannels.add(s.name);
+                this.badChannels.set(s.name, {
+                    reason: 'auto', type: 'noisy', note: '振幅异常高'
+                });
+                continue;
+            }
+            // 高频噪声：差分均值远高于中位数
+            if (diffRatio > 10 && stdRatio > 3) {
+                this.badChannels.set(s.name, {
+                    reason: 'auto', type: 'noisy', note: '高频噪声'
+                });
+                continue;
+            }
+            // 直流漂移：均值偏移大
+            if (s.absMean > medianPtp * 2 && stdRatio < 5) {
+                this.badChannels.set(s.name, {
+                    reason: 'auto', type: 'drift', note: '直流漂移'
+                });
                 continue;
             }
         }
+
+        // 桥接检测结果
+        for (const [name, info] of bridgePairs) {
+            if (!this.badChannels.has(name)) {
+                this.badChannels.set(name, info);
+            }
+        }
+    }
+
+    // 检测桥接通道（相关系数 > 0.99）
+    _detectBridgeChannels(stats) {
+        const result = new Map();
+        if (stats.length < 2) return result;
+
+        // 采样检测（数据量大时降采样以提高性能）
+        const maxSamples = 5000;
+        const sampledStats = stats.map(s => {
+            const data = s.data;
+            const len = data.length;
+            if (len <= maxSamples) return s;
+            const step = Math.floor(len / maxSamples);
+            const sampled = new Float32Array(maxSamples);
+            for (let i = 0; i < maxSamples; i++) {
+                sampled[i] = data[i * step];
+            }
+            return { ...s, data: sampled };
+        });
+
+        for (let i = 0; i < sampledStats.length; i++) {
+            for (let j = i + 1; j < sampledStats.length; j++) {
+                const corr = this._pearsonCorr(
+                    sampledStats[i].data, sampledStats[j].data
+                );
+                if (corr > 0.995) {
+                    const name1 = sampledStats[i].name;
+                    const name2 = sampledStats[j].name;
+                    if (!this.badChannels.has(name1) && !result.has(name1)) {
+                        result.set(name1, {
+                            reason: 'auto', type: 'bridge',
+                            note: `与${name2}桥接(r=${corr.toFixed(3)})`
+                        });
+                    }
+                    if (!this.badChannels.has(name2) && !result.has(name2)) {
+                        result.set(name2, {
+                            reason: 'auto', type: 'bridge',
+                            note: `与${name1}桥接(r=${corr.toFixed(3)})`
+                        });
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    // 皮尔逊相关系数
+    _pearsonCorr(x, y) {
+        const n = Math.min(x.length, y.length);
+        if (n < 100) return 0;
+        let sumX = 0, sumY = 0;
+        for (let i = 0; i < n; i++) { sumX += x[i]; sumY += y[i]; }
+        const meanX = sumX / n, meanY = sumY / n;
+        let cov = 0, varX = 0, varY = 0;
+        for (let i = 0; i < n; i++) {
+            const dx = x[i] - meanX;
+            const dy = y[i] - meanY;
+            cov += dx * dy;
+            varX += dx * dx;
+            varY += dy * dy;
+        }
+        const denom = Math.sqrt(varX * varY);
+        return denom > 0 ? cov / denom : 0;
     }
 
     async _openFile() {
@@ -1122,8 +1250,8 @@ class App {
 
         this._setStatus(
             `已加载: ${fileName} | ${this.channels.length}通道` +
-            (this.invalidChannels.size > 0
-                ? ` (有效${this.channels.length - this.invalidChannels.size})`
+            (this.badChannels.size > 0
+                ? ` (有效${this.channels.length - this.badChannels.size})`
                 : '') +
             ` | ${this.sfreq.toFixed(0)}Hz | ${this.duration.toFixed(0)}s | ${parseTime}ms`,
             'success'
@@ -1208,42 +1336,18 @@ class App {
         const channels = this.showBipolar && this.bipolarChannels
             ? this.bipolarChannels : this.channels;
 
-        const selectAllRow = document.createElement('div');
-        selectAllRow.className = 'channel-item select-all-row';
-
-        const selectAllCb = document.createElement('input');
-        selectAllCb.type = 'checkbox';
-        selectAllCb.id = 'select-all-channels';
-        const allSelected = channels.length > 0 &&
-            this.selectedChannels.length === channels.length;
-        selectAllCb.checked = allSelected;
-        selectAllCb.addEventListener('change', () => {
-            if (selectAllCb.checked) {
-                this._selectAllChannels();
-            } else {
-                this._deselectAllChannels();
-            }
-        });
-
-        const selectAllLabel = document.createElement('span');
-        selectAllLabel.className = 'channel-name select-all-label';
-        selectAllLabel.textContent = '全选';
-
-        selectAllRow.appendChild(selectAllCb);
-        selectAllRow.appendChild(selectAllLabel);
-        container.appendChild(selectAllRow);
-
         const sorted = channels.slice().sort((a, b) =>
             a.name.localeCompare(b.name, undefined, { numeric: true })
         );
 
         for (const ch of sorted) {
             if (searchTerm && ch.name.toLowerCase().indexOf(searchTerm) === -1) continue;
+            if (this.filterBadChannels && !this.badChannels.has(ch.name)) continue;
 
             const div = document.createElement('div');
             div.className = 'channel-item';
-            const isInvalid = this.invalidChannels.has(ch.name);
-            if (isInvalid) {
+            const badInfo = this.badChannels.get(ch.name);
+            if (badInfo) {
                 div.classList.add('channel-invalid');
             }
             if (this.selectedChannels.includes(ch.name)) {
@@ -1260,12 +1364,35 @@ class App {
             const label = document.createElement('span');
             label.className = 'channel-name';
             label.textContent = ch.name;
-            label.title = isInvalid
-                ? `${ch.name} (无效通道: 信号异常)`
-                : ch.name;
 
-            div.appendChild(checkbox);
-            div.appendChild(label);
+            if (badInfo) {
+                const typeDef = App.BAD_CHANNEL_TYPES.find(
+                    t => t.id === badInfo.type
+                );
+                const typeName = typeDef ? typeDef.name : badInfo.type;
+                const typeColor = typeDef ? typeDef.color : '#607d8b';
+                const tag = document.createElement('span');
+                tag.className = 'bad-channel-tag';
+                tag.textContent = typeName;
+                tag.style.backgroundColor = typeColor + '33';
+                tag.style.color = typeColor;
+                tag.style.borderLeft = `3px solid ${typeColor}`;
+                label.title = `${ch.name} (${badInfo.reason === 'auto' ? '自动' : '手动'}: ${typeName}${badInfo.note ? ' - ' + badInfo.note : ''})`;
+                div.appendChild(checkbox);
+                div.appendChild(label);
+                div.appendChild(tag);
+            } else {
+                label.title = ch.name;
+                div.appendChild(checkbox);
+                div.appendChild(label);
+            }
+
+            // 右键菜单：手动标记/取消坏道
+            div.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                this._showBadChannelMenu(e, ch.name);
+            });
+
             container.appendChild(div);
         }
 
@@ -1273,12 +1400,75 @@ class App {
             `${this.selectedChannels.length}/${channels.length}`;
     }
 
+    // 右键菜单：标记/取消坏道
+    _showBadChannelMenu(e, channelName) {
+        // 移除已有菜单
+        const existing = document.getElementById('bad-channel-menu');
+        if (existing) existing.remove();
+
+        const menu = document.createElement('div');
+        menu.id = 'bad-channel-menu';
+        menu.className = 'context-menu';
+
+        const isBad = this.badChannels.has(channelName);
+
+        if (isBad) {
+            const removeItem = document.createElement('div');
+            removeItem.className = 'context-menu-item';
+            removeItem.textContent = '取消坏道标记';
+            removeItem.addEventListener('click', () => {
+                this.badChannels.delete(channelName);
+                this._updateChannelList();
+                this._updateChannelLabels();
+                menu.remove();
+                this._setStatus(`已取消坏道: ${channelName}`, 'info');
+            });
+            menu.appendChild(removeItem);
+        } else {
+            for (const type of App.BAD_CHANNEL_TYPES) {
+                const item = document.createElement('div');
+                item.className = 'context-menu-item';
+                const dot = document.createElement('span');
+                dot.className = 'bad-type-dot';
+                dot.style.backgroundColor = type.color;
+                item.appendChild(dot);
+                item.appendChild(document.createTextNode(type.name));
+                item.addEventListener('click', () => {
+                    this.badChannels.set(channelName, {
+                        reason: 'manual', type: type.id, note: ''
+                    });
+                    this._updateChannelList();
+                    this._updateChannelLabels();
+                    menu.remove();
+                    this._setStatus(`已标记坏道: ${channelName} (${type.name})`, 'info');
+                });
+                menu.appendChild(item);
+            }
+        }
+
+        document.body.appendChild(menu);
+        // 定位菜单
+        const x = Math.min(e.clientX, window.innerWidth - 160);
+        const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10);
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+
+        // 点击其他位置关闭
+        const closeMenu = (ev) => {
+            if (!menu.contains(ev.target)) {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeMenu), 0);
+    }
+
     _selectDefaultChannels() {
         const channels = this.showBipolar && this.bipolarChannels
             ? this.bipolarChannels : this.channels;
 
         this.selectedChannels = channels
-            .filter(ch => !this.invalidChannels.has(ch.name))
+            .filter(ch => !this.badChannels.has(ch.name))
             .map(ch => ch.name);
 
         this._updateChannelList();
@@ -1312,6 +1502,22 @@ class App {
     }
 
     _filterChannels() {
+        this._updateChannelList();
+    }
+
+    _toggleBadChannelFilter() {
+        this.filterBadChannels = !this.filterBadChannels;
+        const btn = document.getElementById('btn-filter-bad');
+        btn.classList.toggle('active', this.filterBadChannels);
+        if (this.filterBadChannels) {
+            // 选中所有坏道通道，方便查看波形
+            for (const [name] of this.badChannels) {
+                if (!this.selectedChannels.includes(name)) {
+                    this.selectedChannels.push(name);
+                }
+            }
+            this._renderWaveforms();
+        }
         this._updateChannelList();
     }
 
@@ -1706,7 +1912,17 @@ class App {
 
                 const span = document.createElement('span');
                 span.textContent = ch.name;
-                span.title = ch.name;
+                const badInfo = this.badChannels.get(ch.name);
+                if (badInfo) {
+                    const typeDef = App.BAD_CHANNEL_TYPES.find(
+                        t => t.id === badInfo.type
+                    );
+                    const typeName = typeDef ? typeDef.name : badInfo.type;
+                    span.title = `${ch.name} [坏道: ${typeName}${badInfo.note ? ' - ' + badInfo.note : ''}]`;
+                    div.classList.add('bad-channel');
+                } else {
+                    span.title = ch.name;
+                }
 
                 div.appendChild(span);
                 div.addEventListener('click', () => {
@@ -1806,7 +2022,17 @@ class App {
 
                 const span = document.createElement('span');
                 span.textContent = ch.name;
-                span.title = ch.name;
+                const badInfo = this.badChannels.get(ch.name);
+                if (badInfo) {
+                    const typeDef = App.BAD_CHANNEL_TYPES.find(
+                        t => t.id === badInfo.type
+                    );
+                    const typeName = typeDef ? typeDef.name : badInfo.type;
+                    span.title = `${ch.name} [坏道: ${typeName}${badInfo.note ? ' - ' + badInfo.note : ''}]`;
+                    div.classList.add('bad-channel');
+                } else {
+                    span.title = ch.name;
+                }
 
                 div.appendChild(span);
                 div.addEventListener('click', () => {
@@ -2388,6 +2614,95 @@ class App {
         }
     }
 
+    // ── 坏道导入/导出 ──────────────────────────────────────────────────────
+
+    async _exportBadChannels() {
+        if (this.badChannels.size === 0) {
+            this._setStatus('没有坏道标记可导出', 'warning');
+            return;
+        }
+
+        const lines = [
+            '# EEG Bad Channel Data',
+            `# File: ${this.currentFile || 'unknown'}`,
+            `# Exported: ${new Date().toISOString()}`,
+            '#',
+            'Channel\tType\tReason\tNote',
+            '',
+        ];
+
+        for (const [name, info] of this.badChannels) {
+            const type = info.type || 'other';
+            const reason = info.reason || 'manual';
+            const note = info.note || '';
+            lines.push(`${name}\t${type}\t${reason}\t${note}`);
+        }
+
+        const content = lines.join('\n');
+
+        if (window.electronAPI) {
+            const result = await window.electronAPI.exportBadChannels({
+                fileName: this.currentFile,
+                content: content,
+            });
+            if (result) {
+                this._setStatus(`已导出 ${this.badChannels.size} 个坏道标记`, 'success');
+            }
+            return;
+        }
+
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = (this.currentFile
+            ? this.currentFile.replace(/\.edf$/i, '') : 'badchannels') + '_bad.txt';
+        a.click();
+        URL.revokeObjectURL(url);
+        this._setStatus(`已导出 ${this.badChannels.size} 个坏道标记`, 'success');
+    }
+
+    async _importBadChannelsDialog() {
+        if (window.electronAPI) {
+            const content = await window.electronAPI.importBadChannels();
+            if (content) {
+                this._importBadChannels(content);
+            }
+            return;
+        }
+    }
+
+    _importBadChannels(content) {
+        const lines = content.split('\n');
+        let count = 0;
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+
+            const parts = trimmed.split('\t');
+            if (parts.length >= 2) {
+                const channel = parts[0];
+                const type = parts[1] || 'other';
+                const reason = parts[2] || 'manual';
+                const note = parts[3] || '';
+
+                // 手动标记优先，不覆盖已有的手动标记
+                const existing = this.badChannels.get(channel);
+                if (existing && existing.reason === 'manual' && reason === 'auto') {
+                    continue;
+                }
+
+                this.badChannels.set(channel, { reason, type, note });
+                count++;
+            }
+        }
+
+        this._updateChannelList();
+        this._updateChannelLabels();
+        this._setStatus(`已导入 ${count} 个坏道标记`, 'success');
+    }
+
     _parseAbsoluteTime(timeStr) {
         const match = timeStr.match(/^(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,3})$/);
         if (!match) return NaN;
@@ -2627,12 +2942,18 @@ class App {
 
     async _doAutosave() {
         if (!window.electronAPI || !this.currentFile) return;
+        // 将 badChannels Map 转为可序列化的数组
+        const badChannelsArr = [];
+        for (const [name, info] of this.badChannels) {
+            badChannelsArr.push({ name, ...info });
+        }
         const data = {
             edfFileName: this.currentFile,
             duration: this.duration || 0,
             sfreq: this.sfreq || 0,
             channels: this.channels ? this.channels.map(ch => ch.name) : [],
             annotations: this.annotations || [],
+            badChannels: badChannelsArr,
             viewportStart: this.renderer ? this.renderer.viewportStart : 0,
         };
         await window.electronAPI.saveAutosave(data);
@@ -2641,11 +2962,274 @@ class App {
     _applyAutosaveData(ad) {
         // 直接恢复标注，渲染时会根据模式自动过滤
         this.annotations = ad.annotations || [];
+        // 恢复坏道标记
+        if (ad.badChannels && Array.isArray(ad.badChannels)) {
+            for (const bc of ad.badChannels) {
+                this.badChannels.set(bc.name, {
+                    reason: bc.reason || 'manual',
+                    type: bc.type || 'other',
+                    note: bc.note || '',
+                });
+            }
+        }
         this._updateAnnotationsList();
+        this._updateChannelList();
         if (this.renderer) {
             this.renderer.setAnnotations(this.annotations);
             this.renderer.render();
         }
+    }
+
+    _showBadChannelsPanel() {
+        if (this.channels.length === 0) {
+            this._setStatus('请先加载 EDF 文件', 'warning');
+            return;
+        }
+
+        const modal = document.getElementById('bad-channels-modal');
+        modal.classList.remove('hidden');
+
+        this._renderBadChannelsList();
+
+        // 绑定按钮事件（只绑定一次）
+        if (!this._bcPanelBound) {
+            this._bcPanelBound = true;
+            document.getElementById('bad-channels-close').addEventListener(
+                'click', () => modal.classList.add('hidden')
+            );
+            document.getElementById('btn-bc-export').addEventListener(
+                'click', () => this._exportBadChannels()
+            );
+            document.getElementById('btn-bc-import').addEventListener(
+                'click', () => this._importBadChannelsDialog()
+            );
+            document.getElementById('btn-bc-clear').addEventListener(
+                'click', () => {
+                    this.badChannels.clear();
+                    this._renderBadChannelsList();
+                    this._updateChannelList();
+                    this._updateChannelLabels();
+                    this._setStatus('已清空所有坏道标记', 'info');
+                }
+            );
+            document.getElementById('btn-bc-redetect').addEventListener(
+                'click', () => {
+                    this._evaluateChannelQuality();
+                    this._renderBadChannelsList();
+                    this._updateChannelList();
+                    this._updateChannelLabels();
+                    this._setStatus(
+                        `重新检测完成，发现 ${this.badChannels.size} 个坏道`,
+                        'info'
+                    );
+                }
+            );
+        }
+    }
+
+    _renderBadChannelsList() {
+        const list = document.getElementById('bad-channels-list');
+        list.innerHTML = '';
+
+        if (this.badChannels.size === 0) {
+            list.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-secondary);">未检测到坏道</div>';
+            return;
+        }
+
+        for (const [name, info] of this.badChannels) {
+            const typeDef = App.BAD_CHANNEL_TYPES.find(t => t.id === info.type);
+            const typeName = typeDef ? typeDef.name : info.type;
+            const typeColor = typeDef ? typeDef.color : '#607d8b';
+
+            const row = document.createElement('div');
+            row.className = 'bc-list-row';
+
+            const dot = document.createElement('span');
+            dot.className = 'bc-type-dot';
+            dot.style.backgroundColor = typeColor;
+
+            const chName = document.createElement('span');
+            chName.className = 'bc-ch-name';
+            chName.textContent = name;
+
+            const typeTag = document.createElement('span');
+            typeTag.className = 'bc-type-tag';
+            typeTag.textContent = typeName;
+            typeTag.style.color = typeColor;
+            typeTag.style.backgroundColor = typeColor + '22';
+
+            const reasonTag = document.createElement('span');
+            reasonTag.className = 'bc-reason-tag';
+            reasonTag.textContent = info.reason === 'auto' ? '自动' : '手动';
+
+            if (info.note) {
+                const noteTag = document.createElement('span');
+                noteTag.className = 'bc-note-tag';
+                noteTag.textContent = info.note;
+                noteTag.title = info.note;
+                row.appendChild(dot);
+                row.appendChild(chName);
+                row.appendChild(typeTag);
+                row.appendChild(reasonTag);
+                row.appendChild(noteTag);
+            } else {
+                row.appendChild(dot);
+                row.appendChild(chName);
+                row.appendChild(typeTag);
+                row.appendChild(reasonTag);
+            }
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'bc-remove-btn';
+            removeBtn.textContent = '×';
+            removeBtn.title = '移除';
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.badChannels.delete(name);
+                this._renderBadChannelsList();
+                this._updateChannelList();
+                this._updateChannelLabels();
+            });
+            row.appendChild(removeBtn);
+
+            // 点击行展开波形预览
+            row.addEventListener('click', () => {
+                this._toggleBadChannelPreview(name, row);
+            });
+
+            list.appendChild(row);
+        }
+    }
+
+    // 展开/收起坏道波形预览
+    _toggleBadChannelPreview(channelName, rowEl) {
+        // 查找已有的预览
+        const next = rowEl.nextElementSibling;
+        if (next && next.classList.contains('bc-preview-row')) {
+            next.remove();
+            return;
+        }
+
+        const previewRow = document.createElement('div');
+        previewRow.className = 'bc-preview-row';
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'bc-preview-canvas';
+        canvas.width = 420;
+        canvas.height = 80;
+        previewRow.appendChild(canvas);
+
+        // 按钮行
+        const btnRow = document.createElement('div');
+        btnRow.className = 'bc-preview-btns';
+
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'btn btn-primary';
+        confirmBtn.style.fontSize = '10px';
+        confirmBtn.textContent = '确认坏道';
+        confirmBtn.addEventListener('click', () => {
+            // 确认为手动标记，防止重新检测时被清除
+            const existing = this.badChannels.get(channelName);
+            if (existing && existing.reason === 'auto') {
+                existing.reason = 'manual';
+            }
+            this._renderBadChannelsList();
+            this._updateChannelList();
+            this._setStatus(`已确认坏道: ${channelName}`, 'info');
+        });
+
+        const restoreBtn = document.createElement('button');
+        restoreBtn.className = 'btn btn-secondary';
+        restoreBtn.style.fontSize = '10px';
+        restoreBtn.textContent = '恢复正常';
+        restoreBtn.addEventListener('click', () => {
+            this.badChannels.delete(channelName);
+            this._renderBadChannelsList();
+            this._updateChannelList();
+            this._updateChannelLabels();
+            this._setStatus(`已恢复通道: ${channelName}`, 'info');
+        });
+
+        btnRow.appendChild(confirmBtn);
+        btnRow.appendChild(restoreBtn);
+        previewRow.appendChild(btnRow);
+
+        rowEl.after(previewRow);
+
+        // 绘制波形
+        this._drawBadChannelPreview(channelName, canvas);
+    }
+
+    // 绘制坏道波形预览
+    _drawBadChannelPreview(channelName, canvas) {
+        const channels = this.showBipolar && this.bipolarChannels
+            ? this.bipolarChannels : this.channels;
+        const ch = channels.find(c => c.name === channelName);
+        if (!ch || !ch.data || ch.data.length === 0) {
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#666';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('无数据', canvas.width / 2, canvas.height / 2);
+            return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        const data = ch.data;
+        const len = data.length;
+
+        // 清空
+        ctx.clearRect(0, 0, w, h);
+
+        // 背景
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fillRect(0, 0, w, h);
+
+        // 零线
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, h / 2);
+        ctx.lineTo(w, h / 2);
+        ctx.stroke();
+
+        // 计算统计量（用于标注）
+        let min = Infinity, max = -Infinity, sum = 0, sumSq = 0;
+        for (let i = 0; i < len; i++) {
+            const v = data[i];
+            if (v < min) min = v;
+            if (v > max) max = v;
+            sum += v;
+            sumSq += v * v;
+        }
+        const mean = sum / len;
+        const std = Math.sqrt(Math.max(0, sumSq / len - mean * mean));
+        const ptp = max - min;
+
+        // 绘制波形
+        const ptpSafe = Math.max(ptp, 1e-10);
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+
+        // 降采样绘制
+        const step = Math.max(1, Math.floor(len / w));
+        for (let px = 0; px < w; px++) {
+            const idx = Math.min(px * step, len - 1);
+            const v = data[idx];
+            const y = h / 2 - ((v - mean) / ptpSafe) * (h * 0.42);
+            if (px === 0) ctx.moveTo(px, y);
+            else ctx.lineTo(px, y);
+        }
+        ctx.stroke();
+
+        // 统计信息
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`μV均值: ${mean.toFixed(1)}  标准差: ${std.toFixed(1)}  峰峰值: ${ptp.toFixed(1)}`, 6, 12);
     }
 
     _showFFTPanel() {
