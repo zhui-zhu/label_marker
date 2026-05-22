@@ -529,6 +529,7 @@ class App {
         document.getElementById('btn-bipolar').addEventListener('click', () => this._toggleBipolar());
         document.getElementById('btn-fixed-height').addEventListener('click', () => this._toggleFixedHeight());
         document.getElementById('btn-fft').addEventListener('click', () => this._showFFTPanel());
+        document.getElementById('btn-spectrogram').addEventListener('click', () => this._showSpectrogramPanel());
         document.getElementById('btn-bad-channels').addEventListener('click', () => this._showBadChannelsPanel());
 
         // 标注类型设置面板
@@ -730,6 +731,7 @@ class App {
 
         // 通道标签宽度拖拽调整
         this._initChannelResizer();
+        this._initSpectrogramMouseInteraction();
 
         window.addEventListener('resize', () => {
             if (this.renderer) {
@@ -3230,6 +3232,452 @@ class App {
         ctx.font = '10px monospace';
         ctx.textAlign = 'left';
         ctx.fillText(`μV均值: ${mean.toFixed(1)}  标准差: ${std.toFixed(1)}  峰峰值: ${ptp.toFixed(1)}`, 6, 12);
+    }
+
+    // ── 时频分析 (Spectrogram) ────────────────────────────────────────────
+
+    _showSpectrogramPanel() {
+        if (this.channels.length === 0) {
+            this._setStatus('请先加载 EDF 文件', 'warning');
+            return;
+        }
+
+        const modal = document.getElementById('spectrogram-modal');
+        modal.classList.remove('hidden');
+
+        const channelSelect = document.getElementById('spectrogram-channel-select');
+        channelSelect.innerHTML = '';
+        const channels = this.showBipolar && this.bipolarChannels
+            ? this.bipolarChannels : this.channels;
+        for (const ch of channels) {
+            const opt = document.createElement('option');
+            opt.value = ch.name;
+            opt.textContent = ch.name;
+            channelSelect.appendChild(opt);
+        }
+
+        document.getElementById('spectrogram-close').onclick = () => {
+            modal.classList.add('hidden');
+        };
+
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.classList.add('hidden');
+        };
+
+        // 延迟一帧渲染，确保容器已完成布局
+        requestAnimationFrame(() => this._updateSpectrogram());
+
+        const ids = [
+            'spectrogram-channel-select',
+            'spectrogram-window-select',
+            'spectrogram-cmap-select',
+            'spectrogram-fmax-select',
+            'spectrogram-scale-select',
+        ];
+        for (const id of ids) {
+            document.getElementById(id).onchange = () => this._updateSpectrogram();
+        }
+    }
+
+    _updateSpectrogram() {
+        const channelName = document.getElementById('spectrogram-channel-select').value;
+        const windowSec = parseFloat(
+            document.getElementById('spectrogram-window-select').value
+        );
+        const cmapName = document.getElementById('spectrogram-cmap-select').value;
+        const maxFreq = parseInt(
+            document.getElementById('spectrogram-fmax-select').value
+        );
+        const scaleType = document.getElementById('spectrogram-scale-select').value;
+
+        const channels = this.showBipolar && this.bipolarChannels
+            ? this.bipolarChannels : this.channels;
+        const channel = channels.find(c => c.name === channelName);
+        if (!channel) return;
+
+        const data = channel.data;
+        const sfreq = channel.sfreq;
+
+        const viewportStart = this.renderer.viewportStart;
+        const viewportEnd = this.renderer.viewportEnd;
+        const startSample = Math.floor(viewportStart * sfreq);
+        const endSample = Math.ceil(viewportEnd * sfreq);
+        const segmentData = data.slice(startSample, endSample);
+
+        const n = segmentData.length;
+        if (n < 2) {
+            document.getElementById('spectrogram-info').textContent =
+                '数据不足，请扩大视口范围';
+            return;
+        }
+
+        // 计算 STFT
+        const stftResult = this._computeSTFT(
+            segmentData, sfreq, windowSec, maxFreq
+        );
+        if (!stftResult) return;
+
+        // 渲染 Spectrogram
+        this._renderSpectrogram(
+            stftResult, viewportStart, viewportEnd,
+            maxFreq, cmapName, scaleType
+        );
+
+        // 渲染同步波形
+        this._renderSpectrogramWaveform(
+            segmentData, sfreq, viewportStart, viewportEnd
+        );
+    }
+
+    _computeSTFT(data, sfreq, windowSec, maxFreq) {
+        const windowLen = Math.floor(windowSec * sfreq);
+        const stepLen = Math.floor(windowLen * 0.5); // 50% 重叠
+        const fftSize = this._nextPow2(windowLen);
+        const freqRes = sfreq / fftSize;
+        const maxFreqBin = Math.min(
+            Math.ceil(maxFreq / freqRes), fftSize / 2
+        );
+
+        if (data.length < windowLen) return null;
+
+        const frames = [];
+        for (let start = 0; start + windowLen <= data.length; start += stepLen) {
+            const frame = data.slice(start, start + windowLen);
+            const spectrum = this._computeFFT(frame, fftSize, 'hann');
+            frames.push(Array.from(spectrum.slice(0, maxFreqBin)));
+        }
+
+        return {
+            frames,
+            freqRes,
+            maxFreqBin,
+            timeStep: stepLen / sfreq,
+            frameCount: frames.length,
+            windowLen,
+        };
+    }
+
+    // 色彩映射表（查找表插值）
+    _getColorMap(name, value) {
+        const v = Math.max(0, Math.min(1, value));
+        // 各色彩映射的关键点 [position, r, g, b]
+        const tables = {
+            viridis: [
+                [0.0, 68, 1, 84], [0.1, 72, 35, 116], [0.2, 64, 67, 135],
+                [0.3, 52, 94, 141], [0.4, 41, 120, 142], [0.5, 32, 144, 140],
+                [0.6, 34, 167, 132], [0.7, 68, 190, 112], [0.8, 121, 209, 81],
+                [0.9, 189, 222, 38], [1.0, 253, 231, 37],
+            ],
+            hot: [
+                [0.0, 0, 0, 0], [0.33, 255, 0, 0],
+                [0.67, 255, 255, 0], [1.0, 255, 255, 255],
+            ],
+            jet: [
+                [0.0, 0, 0, 128], [0.125, 0, 0, 255],
+                [0.375, 0, 255, 255], [0.625, 255, 255, 0],
+                [0.875, 255, 0, 0], [1.0, 128, 0, 0],
+            ],
+            inferno: [
+                [0.0, 0, 0, 4], [0.1, 22, 6, 50], [0.2, 66, 10, 104],
+                [0.3, 106, 23, 110], [0.4, 147, 38, 103],
+                [0.5, 188, 55, 84], [0.6, 221, 81, 58],
+                [0.7, 243, 118, 27], [0.8, 252, 165, 10],
+                [0.9, 246, 215, 70], [1.0, 252, 255, 164],
+            ],
+        };
+
+        const table = tables[name] || tables.viridis;
+
+        // 找到 v 所在的区间并线性插值
+        for (let i = 0; i < table.length - 1; i++) {
+            if (v <= table[i + 1][0]) {
+                const t = (v - table[i][0]) /
+                          (table[i + 1][0] - table[i][0]);
+                return [
+                    Math.round(table[i][1] + t * (table[i + 1][1] - table[i][1])),
+                    Math.round(table[i][2] + t * (table[i + 1][2] - table[i][2])),
+                    Math.round(table[i][3] + t * (table[i + 1][3] - table[i][3])),
+                ];
+            }
+        }
+        return [table[table.length - 1][1],
+                table[table.length - 1][2],
+                table[table.length - 1][3]];
+    }
+
+    _renderSpectrogram(stftResult, startTime, endTime,
+                        maxFreq, cmapName, scaleType) {
+        const canvas = document.getElementById('spectrogram-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = canvas.parentElement;
+        const containerWidth = container.clientWidth;
+        const w = Math.max(400, containerWidth);
+        const specH = 280;
+        const colorBarW = 60;
+        const padding = { top: 25, right: colorBarW + 10, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = specH - padding.top - padding.bottom;
+
+        canvas.width = w;
+        canvas.height = specH;
+        canvas.style.width = w + 'px';
+        canvas.style.height = specH + 'px';
+
+        // 背景
+        ctx.fillStyle = '#0a1628';
+        ctx.fillRect(0, 0, w, specH);
+
+        const { frames, freqRes, frameCount } = stftResult;
+        if (frameCount === 0) return;
+
+        // 计算功率矩阵
+        const powerMatrix = [];
+        let minPower = Infinity, maxPower = -Infinity;
+        let maxMagnitude = 0;
+        for (let t = 0; t < frameCount; t++) {
+            powerMatrix[t] = [];
+            for (let f = 0; f < frames[t].length; f++) {
+                const p = frames[t][f] * frames[t][f]; // 功率
+                const db = 10 * Math.log10(Math.max(p, 1e-20));
+                powerMatrix[t][f] = db;
+                if (db < minPower) minPower = db;
+                if (db > maxPower) maxPower = db;
+                if (frames[t][f] > maxMagnitude) maxMagnitude = frames[t][f];
+            }
+        }
+
+        // 限制动态范围（底部截断 -80dB）
+        const range = maxPower - minPower;
+        const dbFloor = maxPower - Math.min(range, 80);
+
+        // 用离屏 Canvas 绘制热力图，再 drawImage 到主画布
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = plotW;
+        offCanvas.height = plotH;
+        const offCtx = offCanvas.getContext('2d');
+        const imgData = offCtx.createImageData(plotW, plotH);
+        const numFreqBins = frames[0].length;
+
+        for (let py = 0; py < plotH; py++) {
+            const freqIdx = Math.floor(
+                (1 - py / plotH) * numFreqBins
+            );
+            const fIdx = Math.min(freqIdx, numFreqBins - 1);
+
+            for (let px = 0; px < plotW; px++) {
+                const tIdx = Math.floor((px / plotW) * frameCount);
+                const t = Math.min(tIdx, frameCount - 1);
+
+                let val;
+                if (scaleType === 'dB') {
+                    val = (powerMatrix[t][fIdx] - dbFloor) /
+                          (maxPower - dbFloor);
+                } else {
+                    val = frames[t][fIdx] / Math.max(maxMagnitude, 1e-10);
+                }
+                val = Math.max(0, Math.min(1, val));
+
+                const [r, g, b] = this._getColorMap(cmapName, val);
+                const idx = (py * plotW + px) * 4;
+                imgData.data[idx] = r;
+                imgData.data[idx + 1] = g;
+                imgData.data[idx + 2] = b;
+                imgData.data[idx + 3] = 255;
+            }
+        }
+
+        offCtx.putImageData(imgData, 0, 0);
+        ctx.drawImage(offCanvas, padding.left, padding.top);
+
+        // 坐标轴
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padding.left, padding.top, plotW, plotH);
+
+        // 时间刻度
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        const duration = endTime - startTime;
+        const timeTicks = 5;
+        for (let i = 0; i <= timeTicks; i++) {
+            const t = startTime + (duration * i / timeTicks);
+            const x = padding.left + (plotW * i / timeTicks);
+            ctx.fillText(t.toFixed(1) + 's', x, specH - 5);
+            if (i > 0 && i < timeTicks) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.beginPath();
+                ctx.moveTo(x, padding.top);
+                ctx.lineTo(x, padding.top + plotH);
+                ctx.stroke();
+            }
+        }
+
+        // 频率刻度
+        ctx.textAlign = 'right';
+        const freqTicks = 5;
+        for (let i = 0; i <= freqTicks; i++) {
+            const f = maxFreq * i / freqTicks;
+            const y = padding.top + plotH - (plotH * i / freqTicks);
+            ctx.fillText(f.toFixed(0) + 'Hz', padding.left - 5, y + 3);
+            if (i > 0 && i < freqTicks) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.beginPath();
+                ctx.moveTo(padding.left, y);
+                ctx.lineTo(padding.left + plotW, y);
+                ctx.stroke();
+            }
+        }
+
+        // 色条
+        const cbX = padding.left + plotW + 10;
+        const cbW = 15;
+        for (let py = 0; py < plotH; py++) {
+            const v = 1 - py / plotH;
+            const [r, g, b] = this._getColorMap(cmapName, v);
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(cbX, padding.top + py, cbW, 1);
+        }
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.strokeRect(cbX, padding.top, cbW, plotH);
+
+        // 色条刻度
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'left';
+        for (let i = 0; i <= 4; i++) {
+            const y = padding.top + plotH - (plotH * i / 4);
+            let label;
+            if (scaleType === 'dB') {
+                label = (dbFloor + (maxPower - dbFloor) * i / 4).toFixed(0);
+            } else {
+                label = (maxMagnitude * i / 4).toFixed(1);
+            }
+            ctx.fillText(label, cbX + cbW + 3, y + 3);
+        }
+
+        // 轴标签
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Time', padding.left + plotW / 2, specH - 0);
+        ctx.save();
+        ctx.translate(12, padding.top + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText('Frequency', 0, 0);
+        ctx.restore();
+
+        // 保存渲染参数供鼠标交互使用
+        this._spectrogramParams = {
+            stftResult, startTime, endTime, maxFreq,
+            cmapName, scaleType, padding, plotW, plotH,
+            dbFloor, maxPower, powerMatrix,
+        };
+    }
+
+    _renderSpectrogramWaveform(data, sfreq, startTime, endTime) {
+        const canvas = document.getElementById('spectrogram-waveform-canvas');
+        const ctx = canvas.getContext('2d');
+        const container = canvas.parentElement;
+        const containerWidth = container.clientWidth;
+        const w = Math.max(400, containerWidth);
+        const h = 60;
+        const padding = { top: 5, right: 70, bottom: 15, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+
+        ctx.fillStyle = '#0a1628';
+        ctx.fillRect(0, 0, w, h);
+
+        // 零线
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, padding.top + plotH / 2);
+        ctx.lineTo(padding.left + plotW, padding.top + plotH / 2);
+        ctx.stroke();
+
+        // 统计量
+        let min = Infinity, max = -Infinity, sum = 0;
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] < min) min = data[i];
+            if (data[i] > max) max = data[i];
+            sum += data[i];
+        }
+        const mean = sum / data.length;
+        const ptp = Math.max(max - min, 1e-10);
+
+        // 绘制波形
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const step = Math.max(1, Math.floor(data.length / plotW));
+        for (let px = 0; px < plotW; px++) {
+            const idx = Math.min(px * step, data.length - 1);
+            const v = data[idx];
+            const y = padding.top + plotH / 2 -
+                      ((v - mean) / ptp) * (plotH * 0.42);
+            if (px === 0) ctx.moveTo(padding.left + px, y);
+            else ctx.lineTo(padding.left + px, y);
+        }
+        ctx.stroke();
+
+        // 标签
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Waveform', padding.left + plotW / 2, h - 2);
+    }
+
+    _initSpectrogramMouseInteraction() {
+        const canvas = document.getElementById('spectrogram-canvas');
+        const infoEl = document.getElementById('spectrogram-info');
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!this._spectrogramParams) return;
+            const p = this._spectrogramParams;
+            const rect = canvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            const mx = (e.clientX - rect.left);
+            const my = (e.clientY - rect.top);
+
+            const px = mx - p.padding.left;
+            const py = my - p.padding.top;
+
+            if (px < 0 || px >= p.plotW || py < 0 || py >= p.plotH) {
+                infoEl.textContent = '';
+                return;
+            }
+
+            const duration = p.endTime - p.startTime;
+            const time = p.startTime + (px / p.plotW) * duration;
+            const freq = p.maxFreq * (1 - py / p.plotH);
+
+            const tIdx = Math.min(
+                Math.floor((px / p.plotW) * p.stftResult.frameCount),
+                p.stftResult.frameCount - 1
+            );
+            const fIdx = Math.min(
+                Math.floor((1 - py / p.plotH) * p.stftResult.frames[0].length),
+                p.stftResult.frames[0].length - 1
+            );
+
+            const power = p.powerMatrix[tIdx][fIdx];
+            const unit = p.scaleType === 'dB' ? 'dB' : '';
+            infoEl.innerHTML =
+                `时间: <b>${time.toFixed(2)}s</b> &nbsp; ` +
+                `频率: <b>${freq.toFixed(1)}Hz</b> &nbsp; ` +
+                `功率: <b>${power.toFixed(1)}${unit}</b>`;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            infoEl.textContent = '';
+        });
     }
 
     _showFFTPanel() {

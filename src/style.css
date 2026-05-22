@@ -1137,6 +1137,63 @@ body {
     font-weight: 600;
 }
 
+/* 时频分析面板 */
+.spectrogram-modal-box {
+    max-width: 900px;
+    width: 90vw;
+}
+
+.spectrogram-modal-box .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.spectrogram-modal-box .modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.spectrogram-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.spectrogram-canvas-container {
+    background: #0a1628;
+    border-radius: 8px 8px 0 0;
+    padding: 0;
+    margin: 12px 12px 0 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+#spectrogram-canvas {
+    display: block;
+    width: 100%;
+    cursor: crosshair;
+}
+
+.spectrogram-waveform-container {
+    background: #0a1628;
+    border-radius: 0 0 8px 8px;
+    padding: 0;
+    margin: 0 12px 12px 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+#spectrogram-waveform-canvas {
+    display: block;
+    width: 100%;
+}
+
 .form-input:focus {
     border-color: var(--accent);
 }

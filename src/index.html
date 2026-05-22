@@ -23,6 +23,7 @@
             <div class="toolbar-group">
                 <button id="btn-fixed-height" class="btn">固定高度</button>
                 <button id="btn-fft" class="btn">FFT</button>
+                <button id="btn-spectrogram" class="btn">时频</button>
                 <button id="btn-bad-channels" class="btn">坏道</button>
                 <button id="btn-export" class="btn btn-success">导出</button>
                 <button id="btn-import" class="btn">导入</button>
@@ -255,6 +256,62 @@
                 <canvas id="fft-canvas"></canvas>
             </div>
             <div id="fft-info" class="fft-info"></div>
+        </div>
+    </div>
+
+    <!-- 时频分析面板 -->
+    <div id="spectrogram-modal" class="modal-overlay hidden">
+        <div class="modal-box spectrogram-modal-box">
+            <div class="modal-header">
+                <h3>时频分析 (Spectrogram)</h3>
+                <button id="spectrogram-close" class="btn-sm modal-close-btn" title="关闭">&times;</button>
+            </div>
+            <div class="spectrogram-controls">
+                <div class="fft-control-group">
+                    <label>通道:</label>
+                    <select id="spectrogram-channel-select"></select>
+                </div>
+                <div class="fft-control-group">
+                    <label>窗长:</label>
+                    <select id="spectrogram-window-select">
+                        <option value="0.5">0.5s</option>
+                        <option value="1">1s</option>
+                        <option value="2" selected>2s</option>
+                        <option value="4">4s</option>
+                    </select>
+                </div>
+                <div class="fft-control-group">
+                    <label>色彩:</label>
+                    <select id="spectrogram-cmap-select">
+                        <option value="viridis">Viridis</option>
+                        <option value="hot">Hot</option>
+                        <option value="jet">Jet</option>
+                        <option value="inferno">Inferno</option>
+                    </select>
+                </div>
+                <div class="fft-control-group">
+                    <label>频率上限:</label>
+                    <select id="spectrogram-fmax-select">
+                        <option value="30">30 Hz</option>
+                        <option value="50" selected>50 Hz</option>
+                        <option value="100">100 Hz</option>
+                    </select>
+                </div>
+                <div class="fft-control-group">
+                    <label>刻度:</label>
+                    <select id="spectrogram-scale-select">
+                        <option value="dB" selected>dB</option>
+                        <option value="linear">Linear</option>
+                    </select>
+                </div>
+            </div>
+            <div class="spectrogram-canvas-container">
+                <canvas id="spectrogram-canvas"></canvas>
+            </div>
+            <div class="spectrogram-waveform-container">
+                <canvas id="spectrogram-waveform-canvas"></canvas>
+            </div>
+            <div id="spectrogram-info" class="fft-info"></div>
         </div>
     </div>
 
