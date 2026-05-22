@@ -725,12 +725,57 @@ class App {
             }
         });
 
+        // 通道标签宽度拖拽调整
+        this._initChannelResizer();
+
         window.addEventListener('resize', () => {
             if (this.renderer) {
                 this.renderer._resize();
                 this.renderer.render();
                 this._updateChannelLabels();
             }
+        });
+    }
+
+    _initChannelResizer() {
+        const resizer = document.getElementById('channel-resizer');
+        const channelLabels = document.getElementById('channel-labels');
+        if (!resizer || !channelLabels) return;
+
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+
+        resizer.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            isResizing = true;
+            startX = e.clientX;
+            startWidth = channelLabels.offsetWidth;
+            resizer.classList.add('active');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const dx = e.clientX - startX;
+            const newWidth = Math.min(400, Math.max(50, startWidth + dx));
+            channelLabels.style.width = newWidth + 'px';
+            // 同步调整渲染器画布尺寸
+            if (this.renderer) {
+                this.renderer._resize();
+                this.renderer.render();
+                this.renderer._resizeTimeAxis();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isResizing) return;
+            isResizing = false;
+            resizer.classList.remove('active');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         });
     }
 
@@ -1063,6 +1108,9 @@ class App {
         document.getElementById('notch-select').value = 'off';
         document.getElementById('highpass-select').value = 'off';
         document.getElementById('lowpass-select').value = 'off';
+
+        // 清除预览色带
+        this.renderer.clearPreviewAnnotation();
 
         this._evaluateChannelQuality();
 
@@ -1397,6 +1445,13 @@ class App {
         this._evaluateChannelQuality();
         this._selectDefaultChannels();
         this._updateAnnoChannelOptions();
+
+        // 通知渲染器当前模式
+        this.renderer.setBipolarMode(this.showBipolar);
+
+        // 重新渲染标注（会根据模式自动过滤）
+        this.renderer.setAnnotations(this.annotations);
+        this.renderer.render();
     }
 
     _toggleFixedHeight() {
@@ -1432,6 +1487,8 @@ class App {
             a.name.localeCompare(b.name, undefined, { numeric: true })
         );
 
+        // 设置渲染器模式
+        this.renderer.setBipolarMode(this.showBipolar);
         this.renderer.setChannels(selected, this.sfreq, this.duration);
         this.renderer.setAnnotations(this.annotations);
         this._applySensitivity(this.sensitivityUv);
@@ -1584,22 +1641,8 @@ class App {
 
             const fontSize = Math.max(8, Math.min(14, Math.floor(chHeight * 0.3)));
 
-            let maxNameWidth = 0;
-            const tempSpan = document.createElement('span');
-            tempSpan.style.fontFamily = "'Cascadia Code', 'Consolas', monospace";
-            tempSpan.style.fontSize = fontSize + 'px';
-            tempSpan.style.position = 'absolute';
-            tempSpan.style.visibility = 'hidden';
-            tempSpan.style.whiteSpace = 'nowrap';
-            document.body.appendChild(tempSpan);
-            for (const ch of channels) {
-                tempSpan.textContent = ch.name;
-                maxNameWidth = Math.max(maxNameWidth, tempSpan.offsetWidth);
-            }
-            document.body.removeChild(tempSpan);
-
-            const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
-            container.style.width = labelWidth + 'px';
+            // 通道标签容器宽度固定，不随通道名称长度变化
+            // 超长名称通过CSS text-overflow: ellipsis截断，title悬浮提示完整名称
 
             const innerDiv = document.createElement('div');
             innerDiv.style.transform = `translateY(${-scrollY}px)`;
@@ -1696,22 +1739,8 @@ class App {
                 Math.min(maxFontSize, Math.floor(channelHeight * 0.65))
             );
 
-            let maxNameWidth = 0;
-            const tempSpan = document.createElement('span');
-            tempSpan.style.fontFamily = "'Cascadia Code', 'Consolas', monospace";
-            tempSpan.style.fontSize = adaptiveFontSize + 'px';
-            tempSpan.style.position = 'absolute';
-            tempSpan.style.visibility = 'hidden';
-            tempSpan.style.whiteSpace = 'nowrap';
-            document.body.appendChild(tempSpan);
-            for (const ch of channels) {
-                tempSpan.textContent = ch.name;
-                maxNameWidth = Math.max(maxNameWidth, tempSpan.offsetWidth);
-            }
-            document.body.removeChild(tempSpan);
-
-            const labelWidth = Math.min(200, Math.max(80, maxNameWidth + 12));
-            container.style.width = labelWidth + 'px';
+            // 通道标签容器宽度固定，不随通道名称长度变化
+            // 超长名称通过CSS text-overflow: ellipsis截断，title悬浮提示完整名称
 
             const topSpacer = document.createElement('div');
             topSpacer.style.height = padPx + 'px';
@@ -1928,24 +1957,46 @@ class App {
         }
 
         if (this.annoStart === null) {
+            // 设置起点
             this.annoStart = time;
             this.annoStartTime = time;
             this.annoEndTime = null;
             document.getElementById('anno-start').value = this._formatTime(time);
             document.getElementById('anno-end').value = '';
+
+            // 开始预览：监听鼠标移动
+            this._setupPreviewListeners();
+
             this._setStatus(
                 `起点: ${this._formatTime(time)}` +
                 (channelName ? ` | 通道: ${channelName}` : '') +
-                ' — 再次中键点击设置终点',
+                ' — 移动鼠标预览，再次中键点击设置终点',
                 'info'
             );
         } else {
+            // 设置终点
             const start = Math.min(this.annoStart, time);
             const end = Math.max(this.annoStart, time);
             this.annoStartTime = start;
             this.annoEndTime = end;
             this.annoStart = null;
             this.annotationMode = false;
+
+            // 移除鼠标移动监听器，但保留预览色带在最终位置
+            const canvas = this.renderer.canvas;
+            if (this._previewMouseMoveHandler) {
+                canvas.removeEventListener('mousemove', this._previewMouseMoveHandler);
+                this._previewMouseMoveHandler = null;
+            }
+            if (this._previewMouseLeaveHandler) {
+                canvas.removeEventListener('mouseleave', this._previewMouseLeaveHandler);
+                this._previewMouseLeaveHandler = null;
+            }
+            if (this._previewMouseEnterHandler) {
+                canvas.removeEventListener('mouseenter', this._previewMouseEnterHandler);
+                this._previewMouseEnterHandler = null;
+            }
+
             this._updateAnnoModeButton();
             document.getElementById('anno-start').value = this._formatTime(start);
             document.getElementById('anno-end').value = this._formatTime(end);
@@ -1960,6 +2011,89 @@ class App {
         this._updateStepUI();
     }
 
+    // 设置预览色带的鼠标监听器
+    _setupPreviewListeners() {
+        const canvas = this.renderer.canvas;
+
+        // 鼠标移动时更新预览色带
+        this._previewMouseMoveHandler = (e) => {
+            if (this.annoStart === null) return;
+            const time = this.renderer.getTimeAtMouse(e.clientX);
+            const channel = document.getElementById('anno-channel').value;
+            const label = document.getElementById('anno-label').value || 'other';
+
+            // 计算 originalChannel
+            let originalChannel = '';
+            if (channel) {
+                if (this.showBipolar && this.bipolarChannels) {
+                    const bp = this.bipolarChannels.find(c => c.name === channel);
+                    if (bp && bp.ch1 && bp.ch2) {
+                        // 使用 & 连接原始通道名
+                        originalChannel = `${bp.ch1}&${bp.ch2}`;
+                    }
+                } else {
+                    originalChannel = channel;
+                }
+            }
+
+            this.renderer.setPreviewAnnotation(this.annoStart, time, originalChannel, label);
+        };
+
+        // 鼠标离开画布时清除预览
+        this._previewMouseLeaveHandler = () => {
+            this.renderer.clearPreviewAnnotation();
+        };
+
+        // 鼠标进入画布时恢复预览
+        this._previewMouseEnterHandler = (e) => {
+            if (this.annoStart !== null) {
+                const time = this.renderer.getTimeAtMouse(e.clientX);
+                const channel = document.getElementById('anno-channel').value;
+                const label = document.getElementById('anno-label').value || 'other';
+
+                // 计算 originalChannel
+                let originalChannel = '';
+                if (channel) {
+                    if (this.showBipolar && this.bipolarChannels) {
+                        const bp = this.bipolarChannels.find(c => c.name === channel);
+                        if (bp && bp.ch1 && bp.ch2) {
+                            originalChannel = `${bp.ch1}&${bp.ch2}`;
+                        }
+                    } else {
+                        originalChannel = channel;
+                    }
+                }
+
+                this.renderer.setPreviewAnnotation(this.annoStart, time, originalChannel, label);
+            }
+        };
+
+        canvas.addEventListener('mousemove', this._previewMouseMoveHandler);
+        canvas.addEventListener('mouseleave', this._previewMouseLeaveHandler);
+        canvas.addEventListener('mouseenter', this._previewMouseEnterHandler);
+    }
+
+    // 清除预览色带的鼠标监听器
+    _cleanupPreviewListeners() {
+        const canvas = this.renderer.canvas;
+
+        if (this._previewMouseMoveHandler) {
+            canvas.removeEventListener('mousemove', this._previewMouseMoveHandler);
+            this._previewMouseMoveHandler = null;
+        }
+        if (this._previewMouseLeaveHandler) {
+            canvas.removeEventListener('mouseleave', this._previewMouseLeaveHandler);
+            this._previewMouseLeaveHandler = null;
+        }
+        if (this._previewMouseEnterHandler) {
+            canvas.removeEventListener('mouseenter', this._previewMouseEnterHandler);
+            this._previewMouseEnterHandler = null;
+        }
+
+        // 清除预览色带
+        this.renderer.clearPreviewAnnotation();
+    }
+
     _handleCanvasRightClick(e) {
         if (!this.edfData) return;
 
@@ -1969,6 +2103,8 @@ class App {
             this.annoEndTime = null;
             document.getElementById('anno-start').value = '';
             document.getElementById('anno-end').value = '';
+            // 清除预览
+            this._cleanupPreviewListeners();
             this._setStatus('已取消标注选择', 'info');
             this._updateStepUI();
         } else if (this.annotationMode) {
@@ -2048,7 +2184,7 @@ class App {
         const start = this.annoStartTime;
         const end = this.annoEndTime;
         const label = labelInput.value || '发作';
-        const channel = channelInput.value || '';
+        const selectedChannel = channelInput.value || '';
 
         if (start === null || end === null || start >= end) {
             this._setStatus('无效的时间范围', 'error');
@@ -2057,27 +2193,37 @@ class App {
 
         this._saveToHistory();
 
-        let originalChannel = channel;
-        if (this.showBipolar && this.bipolarChannels && channel) {
-            const bp = this.bipolarChannels.find(c => c.name === channel);
-            if (bp && bp.ch1 && bp.ch2) {
-                originalChannel = `${bp.ch1} & ${bp.ch2}`;
+        // 保存原始通道格式（统一用 & 连接双极通道）
+        let originalChannel = '';
+
+        if (selectedChannel) {
+            if (this.showBipolar && this.bipolarChannels) {
+                // 双极模式：查找 bipolar 通道
+                const bp = this.bipolarChannels.find(c => c.name === selectedChannel);
+                if (bp && bp.ch1 && bp.ch2) {
+                    // 原始通道1&原始通道2
+                    originalChannel = `${bp.ch1}&${bp.ch2}`;
+                }
+            } else {
+                // 单极模式：直接使用原始通道名
+                originalChannel = selectedChannel;
             }
         }
 
         const note = document.getElementById('anno-note').value.trim();
 
         this.annotations.push({
-            start, end, label, channel,
+            start, end, label,
             originalChannel,
             note,
         });
         this._updateAnnotationsList();
         this.renderer.setAnnotations(this.annotations);
+        this.renderer.clearPreviewAnnotation(); // 清除预览色带
         this.renderer.render();
         this._setStatus(
             `已添加标注: ${this._formatTime(start)} - ${this._formatTime(end)} [${label}]` +
-            (channel ? ` 通道: ${channel}` : ''),
+            (originalChannel ? ` 通道: ${originalChannel}` : ''),
             'success'
         );
 
@@ -2133,10 +2279,11 @@ class App {
             timeSpan.textContent =
                 `${this._formatTime(ann.start)} - ${this._formatTime(ann.end)}`;
 
-            if (ann.channel) {
+            if (ann.originalChannel) {
                 const chSpan = document.createElement('span');
                 chSpan.className = 'anno-channel';
-                chSpan.textContent = ann.channel;
+                chSpan.textContent = ann.originalChannel;
+                chSpan.title = ann.originalChannel; // 鼠标悬停显示完整名称
                 row.appendChild(timeSpan);
                 row.appendChild(chSpan);
             } else {
@@ -2195,7 +2342,7 @@ class App {
         ];
 
         for (const ann of this.annotations) {
-            const ch = ann.originalChannel || ann.channel || 'ALL';
+            const ch = ann.originalChannel || 'ALL';
             const note = ann.note || '';
             lines.push(
                 `${ch}\t` +
@@ -2272,7 +2419,7 @@ class App {
 
             const parts = trimmed.split('\t');
             if (parts.length >= 4) {
-                const rawChannel = parts[0] === 'ALL' ? '' : parts[0];
+                const channelStr = parts[0] === 'ALL' ? '' : parts[0];
                 const startStr = parts[1];
                 const endStr = parts[2];
                 const label = parts[3] || 'other';
@@ -2285,13 +2432,10 @@ class App {
                 if (isNaN(end)) end = parseFloat(endStr);
 
                 if (!isNaN(start) && !isNaN(end) && end > start) {
-                    const channel = rawChannel.includes(' & ')
-                        ? '' : rawChannel;
-                    const originalChannel = rawChannel.includes(' & ')
-                        ? rawChannel : rawChannel;
                     this.annotations.push({
-                        start, end, label, channel,
-                        originalChannel, note,
+                        start, end, label,
+                        originalChannel: channelStr,
+                        note,
                     });
                     count++;
                 }
@@ -2299,16 +2443,11 @@ class App {
                 const start = parseFloat(parts[0]);
                 const end = parseFloat(parts[1]);
                 const label = parts[2] || 'other';
-                let channel = '';
-
-                if (parts.length >= 4 && isNaN(parseFloat(parts[2]))) {
-                    channel = parts[2] === '全部' ? '' : parts[2];
-                }
-
+                const channel = parts.length >= 4 && isNaN(parseFloat(parts[2])) ? parts[2] : '';
                 const note = parts.length >= 5 ? parts[4] : '';
 
                 if (!isNaN(start) && !isNaN(end) && end > start) {
-                    this.annotations.push({ start, end, label, channel, note });
+                    this.annotations.push({ start, end, label, originalChannel: channel, note });
                     count++;
                 }
             }
@@ -2500,6 +2639,7 @@ class App {
     }
 
     _applyAutosaveData(ad) {
+        // 直接恢复标注，渲染时会根据模式自动过滤
         this.annotations = ad.annotations || [];
         this._updateAnnotationsList();
         if (this.renderer) {

@@ -32,11 +32,21 @@ class GLRenderer {
         this.fixedChannelHeight = 80;
         this.channelScrollY = 0;
 
+        // 预览色带属性
+        this._previewAnnotation = null;
+
+        // 当前显示模式：单极或双极
+        this.showBipolarMode = false;
+
         this._initShaders();
         this._initQuad();
         this._initAnnotationBuffers();
         this._setupInteraction();
         this._resize();
+    }
+
+    setBipolarMode(show) {
+        this.showBipolarMode = show;
     }
 
     setSelectedChannel(name) {
@@ -237,6 +247,10 @@ class GLRenderer {
             'post-ictal':  [0.7, 0.4, 1.0],
             'other':       [0.6, 0.6, 0.6],
         };
+
+        // 预览色带的 VAO 和 VBO
+        this.previewVAO = gl.createVertexArray();
+        this.previewVBO = gl.createBuffer();
     }
 
     _setupInteraction() {
@@ -334,6 +348,11 @@ class GLRenderer {
         this.canvas.height = h;
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
         this._resizeTimeAxis();
+
+        // 窗口大小改变时重新计算标注位置
+        if (this._cachedAnnotations && this._cachedAnnotations.length > 0) {
+            this.setAnnotations(this._cachedAnnotations);
+        }
     }
 
     setChannels(channels, sfreq, totalDuration) {
@@ -420,43 +439,38 @@ class GLRenderer {
     }
 
     setAnnotations(annotations) {
+        // 缓存 annotations，用于 resize 时重新计算
+        this._cachedAnnotations = annotations;
+
         const gl = this.gl;
         const groups = {};
-        const bandH = 0.04;
 
         for (const ann of annotations) {
             const label = ann.label || 'other';
             if (!groups[label]) {
-                groups[label] = { fillVerts: [], bandVerts: [] };
+                groups[label] = { verts: [] };
             }
             const g = groups[label];
-            const x1 = ann.start;
-            const x2 = ann.end;
-            g.fillVerts.push(
-                x1, -1, x2, -1, x1, 1,
-                x1, 1, x2, -1, x2, 1
+
+            // 使用 _computeAnnotationVerts 计算顶点
+            const verts = this._computeAnnotationVerts(
+                ann.start, ann.end, ann.originalChannel, label
             );
-            g.bandVerts.push(
-                x1, -1, x2, -1, x1, -1 + bandH,
-                x1, -1 + bandH, x2, -1, x2, -1 + bandH,
-                x1, 1 - bandH, x2, 1 - bandH, x1, 1,
-                x1, 1, x2, 1 - bandH, x2, 1
-            );
+            if (verts.length > 0) {
+                g.verts.push(...verts);
+            }
         }
 
         this.annoGroups = {};
         let totalVerts = 0;
 
         for (const [label, g] of Object.entries(groups)) {
-            const fillCount = g.fillVerts.length / 2;
-            const bandCount = g.bandVerts.length / 2;
-            const allVerts = g.fillVerts.concat(g.bandVerts);
-            const vertData = new Float32Array(allVerts);
+            const vertCount = g.verts.length / 2;
+            const vertData = new Float32Array(g.verts);
             totalVerts += vertData.length;
 
             this.annoGroups[label] = {
-                fillCount,
-                bandCount,
+                vertCount,
                 offset: 0,
             };
         }
@@ -472,13 +486,10 @@ class GLRenderer {
         const merged = new Float32Array(totalVerts);
         let vertOffset = 0;
         for (const [label, g] of Object.entries(groups)) {
-            const fillData = new Float32Array(g.fillVerts);
-            const bandData = new Float32Array(g.bandVerts);
+            const vertData = new Float32Array(g.verts);
             this.annoGroups[label].offset = vertOffset / 2;
-            merged.set(fillData, vertOffset);
-            vertOffset += fillData.length;
-            merged.set(bandData, vertOffset);
-            vertOffset += bandData.length;
+            merged.set(vertData, vertOffset);
+            vertOffset += vertData.length;
         }
 
         gl.bindVertexArray(this.annoVAO);
@@ -494,6 +505,142 @@ class GLRenderer {
 
     setLabelColors(colors) {
         this.LABEL_COLORS = colors;
+    }
+
+    // 设置预览色带（实时跟随鼠标）
+    setPreviewAnnotation(start, end, originalChannel, label) {
+        this._previewAnnotation = { start, end, originalChannel, label };
+
+        // 计算预览色带的顶点
+        const verts = this._computeAnnotationVerts(
+            start, end, originalChannel, label
+        );
+        if (verts.length === 0) {
+            this.clearPreviewAnnotation();
+            return;
+        }
+
+        const gl = this.gl;
+        gl.bindVertexArray(this.previewVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.previewVBO);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
+
+        const posLoc = gl.getAttribLocation(this.annoProgram, 'a_pos');
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindVertexArray(null);
+        this.render();
+    }
+
+    // 清除预览色带
+    clearPreviewAnnotation() {
+        this._previewAnnotation = null;
+        const gl = this.gl;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.previewVBO);
+        // 清空缓冲区（0 字节表示空）
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        this.render();
+    }
+
+    // 计算单个标注的顶点（供 setAnnotations 和 setPreviewAnnotation 共用）
+    // 关键逻辑：根据 & 判断标注类型
+    // - originalChannel 包含 & → 双极标注
+    // - originalChannel 不包含 & → 单极标注
+    // 单极模式：只显示单极标注
+    // 双极模式：只显示双极标注
+    // 注意：如果找不到对应通道，返回空数组（不显示色带）
+    _computeAnnotationVerts(start, end, originalChannel, label) {
+        const channelCount = this.channels.length;
+
+        if (!originalChannel) {
+            return [];
+        }
+
+        // 根据模式过滤标注类型
+        const isBipolar = originalChannel.includes('&');
+        if (this.showBipolarMode) {
+            // 双极模式：只显示双极标注
+            if (!isBipolar) {
+                return [];
+            }
+        } else {
+            // 单极模式：只显示单极标注
+            if (isBipolar) {
+                return [];
+            }
+        }
+
+        // 如果没有通道，不显示色带
+        if (channelCount === 0) {
+            return [];
+        }
+
+        let chIndex = -1;
+
+        if (isBipolar) {
+            // 双极标注：从 bipolar 通道列表中查找匹配
+            const parts = originalChannel.split('&');
+            if (parts.length >= 2) {
+                const ch1 = parts[0].trim();
+                const ch2 = parts[1].trim();
+                chIndex = this.channels.findIndex(ch => {
+                    return (ch.ch1 === ch1 && ch.ch2 === ch2) ||
+                           (ch.ch1 === ch2 && ch.ch2 === ch1);
+                });
+            }
+        } else {
+            // 单极标注：直接匹配通道名
+            chIndex = this.channels.findIndex(ch => ch.name === originalChannel);
+
+            // 策略2：去掉空格后匹配
+            if (chIndex === -1) {
+                const noSpace = originalChannel.replace(/\s+/g, '');
+                chIndex = this.channels.findIndex(ch =>
+                    ch.name === noSpace ||
+                    ch.name.replace(/\s+/g, '') === noSpace
+                );
+            }
+
+            // 策略3：模糊匹配
+            if (chIndex === -1) {
+                const noSpace = originalChannel.replace(/\s+/g, '');
+                chIndex = this.channels.findIndex(ch => {
+                    return ch.name.includes(noSpace) ||
+                           noSpace.includes(ch.name.replace(/\s+/g, ''));
+                });
+            }
+        }
+
+        // 如果找不到对应通道，不显示色带
+        if (chIndex < 0) {
+            return [];
+        }
+
+        let yTop, yBottom;
+
+        if (this.fixedHeightMode) {
+            const ch = this.fixedChannelHeight / this.canvas.clientHeight;
+            const yScrollNorm = this.channelScrollY / this.canvas.clientHeight;
+            yTop = 1 - chIndex * ch + yScrollNorm;
+            yBottom = 1 - (chIndex + 1) * ch + yScrollNorm;
+        } else {
+            const rawH = 1.0 / channelCount;
+            const ampVal = rawH * 0.45 * this.sensitivity;
+            const padClamped = Math.min(ampVal, 0.02);
+            const usable = 1.0 - 2.0 * padClamped;
+            const ch = usable / channelCount;
+            yTop = (1.0 - padClamped) - chIndex * ch;
+            yBottom = yTop - ch;
+        }
+
+        const yTopGL = yTop * 2 - 1;
+        const yBottomGL = yBottom * 2 - 1;
+
+        return [
+            start, yTopGL, end, yTopGL, start, yBottomGL,
+            start, yBottomGL, end, yTopGL, end, yBottomGL
+        ];
     }
 
     getChannelAtMouse(mouseY) {
@@ -671,34 +818,43 @@ class GLRenderer {
     }
 
     _renderAnnotations() {
-        if (Object.keys(this.annoGroups).length === 0) return;
-
         const gl = this.gl;
 
         gl.useProgram(this.annoProgram);
         gl.uniform2f(this.uAnnoViewportRange, this.viewportStart, this.viewportEnd);
 
-        gl.bindVertexArray(this.annoVAO);
-
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        for (const [label, group] of Object.entries(this.annoGroups)) {
+        // 绘制已保存的标注
+        if (Object.keys(this.annoGroups).length > 0) {
+            gl.bindVertexArray(this.annoVAO);
+
+            for (const [label, group] of Object.entries(this.annoGroups)) {
+                const color = this.LABEL_COLORS[label] || [0.6, 0.6, 0.6];
+
+                if (group.vertCount > 0) {
+                    gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.25);
+                    gl.drawArrays(gl.TRIANGLES, group.offset, group.vertCount);
+                }
+            }
+
+            gl.bindVertexArray(null);
+        }
+
+        // 绘制预览色带（更亮的颜色，用虚线边缘效果）
+        if (this._previewAnnotation) {
+            const label = this._previewAnnotation.label || 'other';
             const color = this.LABEL_COLORS[label] || [0.6, 0.6, 0.6];
 
-            if (group.fillCount > 0) {
-                gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.25);
-                gl.drawArrays(gl.TRIANGLES, group.offset, group.fillCount);
-            }
-
-            if (group.bandCount > 0) {
-                gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.7);
-                gl.drawArrays(gl.TRIANGLES, group.offset + group.fillCount, group.bandCount);
-            }
+            gl.bindVertexArray(this.previewVAO);
+            // 预览色带用更亮的颜色和更高的透明度
+            gl.uniform4f(this.uAnnoColor, color[0], color[1], color[2], 0.45);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.bindVertexArray(null);
         }
 
         gl.disable(gl.BLEND);
-        gl.bindVertexArray(null);
     }
 
     _renderWaveforms() {
@@ -827,13 +983,16 @@ class GLRenderer {
         // 获取 channel-labels 的宽度
         const channelLabels = document.getElementById('channel-labels');
         const labelW = channelLabels ? channelLabels.clientWidth : 0;
-        // time-axis-canvas 宽度 = container宽度 - label宽度
-        const w = containerW - labelW;
+        // 获取拖拽分隔条的宽度
+        const resizer = document.getElementById('channel-resizer');
+        const resizerW = resizer ? resizer.clientWidth : 0;
+        // time-axis-canvas 宽度 = container宽度 - label宽度 - 分隔条宽度
+        const w = containerW - labelW - resizerW;
         this.timeAxisCanvas.width = w * dpr;
         this.timeAxisCanvas.height = h * dpr;
         this.timeAxisCanvas.style.width = w + 'px';
         this.timeAxisCanvas.style.height = h + 'px';
-        this.timeAxisCanvas.style.left = labelW + 'px';
+        this.timeAxisCanvas.style.left = (labelW + resizerW) + 'px';
         // 让 canvas-container 为 time-axis-canvas 预留空间
         container.style.paddingBottom = h + 'px';
     }

@@ -509,16 +509,33 @@ body {
 
 .channel-labels {
     width: 110px;
-    min-width: 80px;
-    max-width: 200px;
+    min-width: 50px;
+    max-width: 400px;
     background: var(--bg-secondary);
-    border-right: 1px solid var(--border);
+    border-right: none;
     overflow: hidden;
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
     user-select: none;
     align-self: stretch;
+}
+
+/* 通道标签区域拖拽分隔条 */
+.channel-resizer {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    flex-shrink: 0;
+    align-self: stretch;
+    position: relative;
+    z-index: 5;
+    transition: background 0.15s;
+}
+
+.channel-resizer:hover,
+.channel-resizer.active {
+    background: var(--accent);
 }
 
 .channel-label-item {
@@ -1006,7 +1023,12 @@ body {
     border-radius: 3px;
     background: rgba(255, 167, 38, 0.15);
     color: var(--warning);
+    width: 80px;
+    flex: 0 0 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+    vertical-align: middle;
 }
 
 .anno-label {

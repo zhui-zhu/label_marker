@@ -330,8 +330,8 @@ class EDFParser {
                 }
 
                 bipolar.push({
-                    name: `${parsed[i].prefix}${parsed[i].number}-` +
-                          `${parsed[i + 1].prefix}${parsed[i + 1].number}`,
+                    // 保持原始通道名称，用 & 连接
+                    name: `${ch1.name} & ${ch2.name}`,
                     data: data,
                     sfreq: ch1.sfreq,
                     physicalMin: ch1.physicalMin - ch2.physicalMax,
