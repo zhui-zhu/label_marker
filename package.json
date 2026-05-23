@@ -12,16 +12,30 @@
   "license": "ISC",
   "devDependencies": {
     "electron": "^42.0.1",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "rcedit": "^5.0.2"
   },
   "build": {
     "appId": "com.eeg.label-marker",
     "productName": "EEG波形标注工具",
+    "directories": {
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**",
+      "static/**"
+    ],
+    "afterPack": "build/after-pack.js",
     "win": {
+      "icon": "static/icons/icon.png",
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "signAndEditExecutable": false,
@@ -31,24 +45,31 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
-      "installerLanguages": ["zh_CN", "en_US"],
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "language": 2052,
       "perMachine": true,
       "deleteAppDataOnUninstall": false,
-      "shortcutName": "EEG波形标注工具"
+      "shortcutName": "EEG波形标注工具",
+      "installerIcon": "static/icons/icon.ico",
+      "uninstallerIcon": "static/icons/icon.ico"
     },
     "fileAssociations": [
       {
         "ext": "edf",
         "name": "EDF File",
         "description": "European Data Format File",
-        "role": "Editor"
+        "role": "Editor",
+        "icon": "static/icons/icon.ico"
       },
       {
         "ext": "bdf",
         "name": "BDF File",
         "description": "BioSemi Data Format File",
-        "role": "Editor"
+        "role": "Editor",
+        "icon": "static/icons/icon.ico"
       }
     ]
   }

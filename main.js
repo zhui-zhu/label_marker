@@ -17,7 +17,7 @@ function createWindow() {
         minWidth: 1024,
         minHeight: 600,
         title: 'EEG 波形标注工具',
-        icon: path.join(__dirname, 'build', 'icon.png'),
+        icon: path.join(__dirname, 'static', 'icons', 'icon.png'),
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
