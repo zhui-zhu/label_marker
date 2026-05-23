@@ -15,10 +15,41 @@
     "electron-builder": "^26.0.12"
   },
   "build": {
+    "appId": "com.eeg.label-marker",
+    "productName": "EEG波形标注工具",
     "win": {
-      "target": "portable",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
       "signAndEditExecutable": false,
       "forceCodeSigning": false
-    }
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerLanguages": ["zh_CN", "en_US"],
+      "language": 2052,
+      "perMachine": true,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "EEG波形标注工具"
+    },
+    "fileAssociations": [
+      {
+        "ext": "edf",
+        "name": "EDF File",
+        "description": "European Data Format File",
+        "role": "Editor"
+      },
+      {
+        "ext": "bdf",
+        "name": "BDF File",
+        "description": "BioSemi Data Format File",
+        "role": "Editor"
+      }
+    ]
   }
 }

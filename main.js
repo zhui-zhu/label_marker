@@ -4,6 +4,12 @@ const fs = require('fs');
 
 let mainWindow;
 
+// 单实例锁：防止多开，第二个实例传文件路径给主实例
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    app.quit();
+}
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1600,
@@ -11,6 +17,7 @@ function createWindow() {
         minWidth: 1024,
         minHeight: 600,
         title: 'EEG 波形标注工具',
+        icon: path.join(__dirname, 'build', 'icon.png'),
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -143,7 +150,53 @@ async function importAnnotationsFromMenu() {
     mainWindow.webContents.send('annotations-imported', { content });
 }
 
-app.whenReady().then(createWindow);
+function openFileByPath(filePath) {
+    try {
+        if (!fs.existsSync(filePath)) return;
+        const buf = fs.readFileSync(filePath);
+        const stats = fs.statSync(filePath);
+        mainWindow.webContents.send('edf-file-opened', {
+            name: path.basename(filePath),
+            size: stats.size,
+            data: buf,
+            filePath: filePath,
+        });
+        addRecentFile(filePath, path.basename(filePath), stats.size);
+    } catch (err) {
+        console.error('打开文件失败:', err);
+    }
+}
+
+function handleFileArgs(args) {
+    for (const arg of args) {
+        const ext = path.extname(arg).toLowerCase();
+        if (ext === '.edf' || ext === '.bdf') {
+            openFileByPath(arg);
+        }
+    }
+}
+
+app.whenReady().then(() => {
+    createWindow();
+    // 处理命令行中的文件路径（首次启动，等页面加载完再发送）
+    if (process.argv.length > 1) {
+        const pendingArgs = process.argv.slice(1);
+        mainWindow.webContents.once('did-finish-load', () => {
+            handleFileArgs(pendingArgs);
+        });
+    }
+});
+
+// 第二个实例启动时，将文件路径传给主实例
+app.on('second-instance', (event, argv) => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        if (argv.length > 1) {
+            handleFileArgs(argv.slice(1));
+        }
+    }
+});
 
 app.on('window-all-closed', () => { app.quit(); });
 
