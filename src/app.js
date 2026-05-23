@@ -453,6 +453,7 @@ class App {
         this.renderer.onViewportChange = (start, end) => {
             this._updateTimeDisplay(start, end);
             this._updateLabelPositions();
+            this._renderOverview();
         };
 
         this.renderer.onDrag = () => {
@@ -531,6 +532,7 @@ class App {
         document.getElementById('btn-fft').addEventListener('click', () => this._showFFTPanel());
         document.getElementById('btn-spectrogram').addEventListener('click', () => this._showSpectrogramPanel());
         document.getElementById('btn-bad-channels').addEventListener('click', () => this._showBadChannelsPanel());
+        document.getElementById('btn-overview').addEventListener('click', () => this._toggleOverview());
 
         // 标注类型设置面板
         document.getElementById('btn-label-types').addEventListener('click', () => this._showLabelTypesPanel());
@@ -732,6 +734,7 @@ class App {
         // 通道标签宽度拖拽调整
         this._initChannelResizer();
         this._initSpectrogramMouseInteraction();
+        this._initOverviewInteraction();
 
         window.addEventListener('resize', () => {
             if (this.renderer) {
@@ -1523,6 +1526,17 @@ class App {
         this._updateChannelList();
     }
 
+    _toggleOverview() {
+        const canvas = document.getElementById('overview-canvas');
+        const btn = document.getElementById('btn-overview');
+        const visible = canvas.classList.toggle('visible');
+        btn.classList.toggle('active', visible);
+        if (this.renderer) {
+            this.renderer._resizeTimeAxis();
+            if (visible) this._renderOverview();
+        }
+    }
+
     _onLassoStart(e) {
         if (e.button !== 0 && e.button !== 2) return;
         const channelList = document.getElementById('channel-list');
@@ -1702,6 +1716,7 @@ class App {
         this._applySensitivity(this.sensitivityUv);
         this._updateTimeDisplay(this.renderer.viewportStart, this.renderer.viewportEnd);
         this._updateChannelLabels();
+        this._renderOverview();
     }
 
     _applySensitivity(uvValue) {
@@ -3632,6 +3647,202 @@ class App {
         ctx.font = '9px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText('Waveform', padding.left + plotW / 2, h - 2);
+    }
+
+    // ── 全局波形概览条 (Overview Bar) ────────────────────────────────────
+
+    _initOverviewInteraction() {
+        const canvas = document.getElementById('overview-canvas');
+        let dragging = false;
+        let dragStartX = 0;
+        let dragStartViewportStart = 0;
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!this.renderer || this.renderer.totalDuration <= 0) return;
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const w = rect.width;
+
+            const totalDur = this.renderer.totalDuration;
+            const vpStart = this.renderer.viewportStart;
+            const vpEnd = this.renderer.viewportEnd;
+            const vpWidth = vpEnd - vpStart;
+
+            const vpStartPx = (vpStart / totalDur) * w;
+            const vpEndPx = (vpEnd / totalDur) * w;
+
+            if (mx >= vpStartPx && mx <= vpEndPx) {
+                // 点击在视窗框内，进入拖拽模式
+                dragging = true;
+                dragStartX = mx;
+                dragStartViewportStart = vpStart;
+            } else {
+                // 点击在视窗外，跳转视窗中心到点击位置
+                const clickTime = (mx / w) * totalDur;
+                let newStart = clickTime - vpWidth / 2;
+                newStart = Math.max(0, Math.min(newStart, totalDur - vpWidth));
+                this.renderer.setViewport(newStart, newStart + vpWidth);
+                this._updateTimeDisplay(newStart, newStart + vpWidth);
+                this._updateLabelPositions();
+                this._renderOverview();
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!dragging || !this.renderer) return;
+            const canvas = document.getElementById('overview-canvas');
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const w = rect.width;
+            const totalDur = this.renderer.totalDuration;
+            const vpWidth = this.renderer.viewportEnd - this.renderer.viewportStart;
+
+            const dx = mx - dragStartX;
+            const dt = (dx / w) * totalDur;
+            let newStart = dragStartViewportStart + dt;
+            newStart = Math.max(0, Math.min(newStart, totalDur - vpWidth));
+            this.renderer.setViewport(newStart, newStart + vpWidth);
+            this._updateTimeDisplay(newStart, newStart + vpWidth);
+            this._updateLabelPositions();
+            this._renderOverview();
+        });
+
+        window.addEventListener('mouseup', () => {
+            dragging = false;
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            if (!this.renderer) return;
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const w = rect.width;
+            const totalDur = this.renderer.totalDuration;
+            const mouseTime = (mx / w) * totalDur;
+
+            const range = this.renderer.viewportEnd - this.renderer.viewportStart;
+            const delta = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+            const newRange = Math.max(0.5, Math.min(totalDur, range * delta));
+
+            let newStart = mouseTime - (mouseTime - this.renderer.viewportStart) * (newRange / range);
+            let newEnd = newStart + newRange;
+            if (newStart < 0) { newStart = 0; newEnd = newRange; }
+            if (newEnd > totalDur) { newEnd = totalDur; newStart = newEnd - newRange; }
+
+            this.renderer.setViewport(newStart, newEnd);
+            this._updateTimeDisplay(newStart, newEnd);
+            this._updateLabelPositions();
+            this._renderOverview();
+        });
+    }
+
+    _renderOverview() {
+        const canvas = document.getElementById('overview-canvas');
+        if (!canvas || !this.renderer || this.renderer.totalDuration <= 0) return;
+
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+
+        // 背景
+        ctx.fillStyle = 'rgba(8, 12, 24, 0.95)';
+        ctx.fillRect(0, 0, w, h);
+
+        const totalDur = this.renderer.totalDuration;
+        const vpStart = this.renderer.viewportStart;
+        const vpEnd = this.renderer.viewportEnd;
+
+        // 绘制标注色块
+        this._renderOverviewAnnotations(ctx, w, h, totalDur);
+
+        // 绘制时间刻度
+        this._renderOverviewTicks(ctx, w, h, totalDur);
+
+        // 绘制视窗框
+        const vpStartPx = (vpStart / totalDur) * w;
+        const vpEndPx = (vpEnd / totalDur) * w;
+
+        // 视窗外遮罩
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillRect(0, 0, vpStartPx, h);
+        ctx.fillRect(vpEndPx, 0, w - vpEndPx, h);
+
+        // 视窗框边框
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(vpStartPx, 0, vpEndPx - vpStartPx, h);
+
+        // 视窗框左右边缘手柄
+        const handleH = 8;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        // 左手柄
+        ctx.fillRect(vpStartPx - 1, h / 2 - handleH / 2, 3, handleH);
+        // 右手柄
+        ctx.fillRect(vpEndPx - 2, h / 2 - handleH / 2, 3, handleH);
+    }
+
+    _renderOverviewAnnotations(ctx, w, h, totalDur) {
+        if (!this.annotations || this.annotations.length === 0) return;
+
+        for (const ann of this.annotations) {
+            const labelType = this._labelTypes.find(t => t.id === ann.label);
+            if (!labelType) continue;
+
+            const startPx = (ann.start / totalDur) * w;
+            const endPx = (ann.end / totalDur) * w;
+
+            const [r, g, b] = labelType.color;
+            ctx.fillStyle = `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, 0.35)`;
+            ctx.fillRect(startPx, 0, Math.max(endPx - startPx, 1), h);
+        }
+    }
+
+    _renderOverviewTicks(ctx, w, h, totalDur) {
+        // 自适应刻度间隔
+        const intervals = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+        const targetTickCount = Math.max(4, Math.floor(w / 100));
+        let interval = intervals[intervals.length - 1];
+        for (const iv of intervals) {
+            if (totalDur / iv <= targetTickCount * 1.5) {
+                interval = iv;
+                break;
+            }
+        }
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 1;
+
+        const tickH = 6;
+        for (let t = 0; t <= totalDur; t += interval) {
+            const x = (t / totalDur) * w;
+            ctx.beginPath();
+            ctx.moveTo(x, h - tickH);
+            ctx.lineTo(x, h);
+            ctx.stroke();
+
+            const label = this._formatTimeShort(t);
+            ctx.fillText(label, x, h - tickH - 2);
+        }
+    }
+
+    _formatTimeShort(seconds) {
+        if (seconds < 60) return seconds + 's';
+        if (seconds < 3600) {
+            const m = Math.floor(seconds / 60);
+            const s = Math.round(seconds % 60);
+            return s > 0 ? `${m}:${s.toString().padStart(2, '0')}` : `${m}m`;
+        }
+        const h = Math.floor(seconds / 3600);
+        const m = Math.round((seconds % 3600) / 60);
+        return m > 0 ? `${h}h${m}m` : `${h}h`;
     }
 
     _initSpectrogramMouseInteraction() {

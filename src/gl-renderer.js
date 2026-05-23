@@ -423,6 +423,7 @@ class GLRenderer {
         this.viewportStart = Math.max(0, start);
         this.viewportEnd = Math.min(this.totalDuration, end);
         this.render();
+        this._notifyViewportChange();
     }
 
     setViewportDuration(duration) {
@@ -977,6 +978,7 @@ class GLRenderer {
         if (!this.timeAxisCanvas) return;
         const dpr = window.devicePixelRatio || 1;
         const h = 32;
+        const overviewH = 40;
         // 获取 canvas-container 的总宽度
         const container = this.canvas.parentElement;
         const containerW = container.clientWidth;
@@ -993,8 +995,22 @@ class GLRenderer {
         this.timeAxisCanvas.style.width = w + 'px';
         this.timeAxisCanvas.style.height = h + 'px';
         this.timeAxisCanvas.style.left = (labelW + resizerW) + 'px';
-        // 让 canvas-container 为 time-axis-canvas 预留空间
-        container.style.paddingBottom = h + 'px';
+
+        // 概览条尺寸同步（占满全宽）
+        const overviewCanvas = document.getElementById('overview-canvas');
+        const overviewVisible = overviewCanvas &&
+            overviewCanvas.classList.contains('visible');
+        if (overviewCanvas) {
+            overviewCanvas.width = containerW * dpr;
+            overviewCanvas.height = overviewH * dpr;
+            overviewCanvas.style.width = containerW + 'px';
+            overviewCanvas.style.height = overviewH + 'px';
+            overviewCanvas.style.left = '0px';
+        }
+
+        // 让 canvas-container 为 time-axis + overview 预留空间
+        container.style.paddingBottom = overviewVisible
+            ? (h + overviewH) + 'px' : h + 'px';
     }
 
     _renderTimeAxis() {

@@ -782,6 +782,23 @@ body {
     background: transparent;
 }
 
+#overview-canvas {
+    position: absolute;
+    bottom: 32px;
+    left: 0;
+    right: 0;
+    height: 40px;
+    z-index: 10;
+    background: rgba(8, 12, 24, 0.95);
+    cursor: pointer;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    display: none;
+}
+
+#overview-canvas.visible {
+    display: block;
+}
+
 .waveform-tooltip {
     position: absolute;
     pointer-events: none;
