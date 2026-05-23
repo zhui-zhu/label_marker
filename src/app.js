@@ -577,6 +577,7 @@ class App {
         document.getElementById('notch-select').addEventListener('change', () => this._applyFilters());
         document.getElementById('highpass-select').addEventListener('change', () => this._applyFilters());
         document.getElementById('lowpass-select').addEventListener('change', () => this._applyFilters());
+        document.getElementById('baseline-select').addEventListener('change', () => this._applyFilters());
 
         document.getElementById('waveform-canvas').addEventListener('click', (e) => {
             if (this._wasDragging) {
@@ -1241,6 +1242,7 @@ class App {
         document.getElementById('notch-select').value = 'off';
         document.getElementById('highpass-select').value = 'off';
         document.getElementById('lowpass-select').value = 'off';
+        document.getElementById('baseline-select').value = 'off';
 
         // 清除预览色带
         this.renderer.clearPreviewAnnotation();
@@ -1756,10 +1758,29 @@ class App {
         const notchFreq = document.getElementById('notch-select').value;
         const highpassFreq = parseFloat(document.getElementById('highpass-select').value);
         const lowpassFreq = parseFloat(document.getElementById('lowpass-select').value);
+        const baselineMode = document.getElementById('baseline-select').value;
 
         for (let i = 0; i < this.channels.length; i++) {
             const origData = this.originalChannels[i].data;
             let data = new Float32Array(origData);
+
+            // 基线校正（在滤波前执行，避免DC偏移影响滤波效果）
+            if (baselineMode === 'mean') {
+                let sum = 0;
+                for (let j = 0; j < data.length; j++) sum += data[j];
+                const mean = sum / data.length;
+                for (let j = 0; j < data.length; j++) data[j] -= mean;
+            } else if (baselineMode === 'median') {
+                // 采样近似中位数，避免全量排序开销过大
+                const sampleStep = Math.max(1, Math.floor(data.length / 10000));
+                const samples = [];
+                for (let j = 0; j < data.length; j += sampleStep) {
+                    samples.push(data[j]);
+                }
+                samples.sort((a, b) => a - b);
+                const median = samples[Math.floor(samples.length / 2)];
+                for (let j = 0; j < data.length; j++) data[j] -= median;
+            }
 
             if (notchFreq !== 'off') {
                 const freq = parseInt(notchFreq);
