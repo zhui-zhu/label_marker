@@ -2604,6 +2604,79 @@ class App {
 
         document.getElementById('anno-count').textContent =
             `标注: ${this.annotations.length}`;
+        this._updateAnnoStats();
+    }
+
+    _updateAnnoStats() {
+        const container = document.getElementById('anno-stats');
+        if (!container) return;
+
+        if (this.annotations.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        // 按标注类型分组统计
+        const stats = {};
+        let totalCount = 0;
+        let totalDuration = 0;
+
+        for (const ann of this.annotations) {
+            const label = ann.label || 'other';
+            if (!stats[label]) {
+                stats[label] = { count: 0, duration: 0 };
+            }
+            stats[label].count++;
+            stats[label].duration += (ann.end - ann.start);
+            totalCount++;
+            totalDuration += (ann.end - ann.start);
+        }
+
+        // 按 _labelTypes 的顺序排列
+        const orderedLabels = this._labelTypes
+            .map(t => t.id)
+            .filter(id => stats[id]);
+        // 追加不在 _labelTypes 中的标签
+        for (const id of Object.keys(stats)) {
+            if (!orderedLabels.includes(id)) orderedLabels.push(id);
+        }
+
+        let html = '';
+        for (const id of orderedLabels) {
+            const s = stats[id];
+            const labelType = this._labelTypes.find(t => t.id === id);
+            const name = labelType ? labelType.name : id;
+            const color = labelType ? labelType.color : [0.6, 0.6, 0.6];
+            const colorRgb = `rgb(${Math.round(color[0]*255)},${Math.round(color[1]*255)},${Math.round(color[2]*255)})`;
+
+            html += `<div class="anno-stats-row">
+                <span class="anno-stats-dot" style="background:${colorRgb}"></span>
+                <span class="anno-stats-label">${name}</span>
+                <span class="anno-stats-count">${s.count}</span>
+                <span class="anno-stats-duration">${this._formatDuration(s.duration)}</span>
+            </div>`;
+        }
+
+        html += `<div class="anno-stats-row anno-stats-total">
+            <span class="anno-stats-dot" style="background:transparent"></span>
+            <span class="anno-stats-label">合计</span>
+            <span class="anno-stats-count">${totalCount}</span>
+            <span class="anno-stats-duration">${this._formatDuration(totalDuration)}</span>
+        </div>`;
+
+        container.innerHTML = html;
+    }
+
+    _formatDuration(seconds) {
+        if (seconds < 60) return seconds.toFixed(1) + 's';
+        if (seconds < 3600) {
+            const m = Math.floor(seconds / 60);
+            const s = Math.round(seconds % 60);
+            return s > 0 ? `${m}m${s}s` : `${m}m`;
+        }
+        const h = Math.floor(seconds / 3600);
+        const m = Math.round((seconds % 3600) / 60);
+        return m > 0 ? `${h}h${m}m` : `${h}h`;
     }
 
     async _exportAnnotations() {
@@ -2632,6 +2705,26 @@ class App {
                 `${note}`
             );
         }
+
+        // 追加统计摘要
+        lines.push('', '# --- 统计摘要 ---');
+        const stats = {};
+        let totalCount = 0;
+        let totalDuration = 0;
+        for (const ann of this.annotations) {
+            const label = ann.label || 'other';
+            if (!stats[label]) stats[label] = { count: 0, duration: 0 };
+            stats[label].count++;
+            stats[label].duration += (ann.end - ann.start);
+            totalCount++;
+            totalDuration += (ann.end - ann.start);
+        }
+        for (const [label, s] of Object.entries(stats)) {
+            const labelType = this._labelTypes.find(t => t.id === label);
+            const name = labelType ? labelType.name : label;
+            lines.push(`# ${name}\t${s.count}\t${this._formatDuration(s.duration)}`);
+        }
+        lines.push(`# 合计\t${totalCount}\t${this._formatDuration(totalDuration)}`);
 
         const content = lines.join('\n');
 
