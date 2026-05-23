@@ -2558,10 +2558,26 @@ class App {
             const delBtn = document.createElement('button');
             delBtn.className = 'anno-delete';
             delBtn.textContent = '×';
-            delBtn.addEventListener('click', () => this._deleteAnnotation(i));
+            delBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._deleteAnnotation(i);
+            });
 
             row.appendChild(labelSpan);
             row.appendChild(delBtn);
+
+            // 点击标注条目跳转到对应位置
+            row.addEventListener('click', () => {
+                const center = (ann.start + ann.end) / 2;
+                const duration = this.renderer.viewportEnd
+                    - this.renderer.viewportStart;
+                let newStart = center - duration / 2;
+                newStart = Math.max(0, Math.min(
+                    newStart, this.renderer.totalDuration - duration
+                ));
+                this.renderer.setViewport(newStart, newStart + duration);
+            });
+
             container.appendChild(row);
         }
 

@@ -1256,6 +1256,7 @@ body {
     padding: 4px 10px;
     gap: 6px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+    cursor: pointer;
 }
 
 .annotation-row:hover {
