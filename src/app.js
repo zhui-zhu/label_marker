@@ -1228,7 +1228,9 @@ class App {
             ...ch,
             data: new Float32Array(ch.data)
         }));
-        this.sfreq = this.channels.length > 0 ? this.channels[0].sfreq : 0;
+        this.sfreq = this.channels.length > 0
+            ? Math.max(...this.channels.map(ch => ch.sfreq || 0))
+            : 0;
         this.duration = this.edfData.header.totalDuration;
         this.currentFile = fileName;
         this.recordingStart = this._parseEDFDateTime(
@@ -1763,6 +1765,7 @@ class App {
         for (let i = 0; i < this.channels.length; i++) {
             const origData = this.originalChannels[i].data;
             let data = new Float32Array(origData);
+            const chSfreq = this.channels[i].sfreq || this.sfreq;
 
             // 基线校正（在滤波前执行，避免DC偏移影响滤波效果）
             if (baselineMode === 'mean') {
@@ -1784,16 +1787,25 @@ class App {
 
             if (notchFreq !== 'off') {
                 const freq = parseInt(notchFreq);
-                data = this._notchFilter(data, freq, this.sfreq);
+                data = this._notchFilter(data, freq, chSfreq);
             }
             if (!isNaN(highpassFreq)) {
-                data = this._highpassFilter(data, highpassFreq, this.sfreq);
+                data = this._highpassFilter(data, highpassFreq, chSfreq);
             }
             if (!isNaN(lowpassFreq)) {
-                data = this._lowpassFilter(data, lowpassFreq, this.sfreq);
+                data = this._lowpassFilter(data, lowpassFreq, chSfreq);
             }
 
             this.channels[i].data = data;
+
+            // 滤波后重新计算数据范围，保证归一化和数值还原准确
+            let min = Infinity, max = -Infinity;
+            for (let j = 0; j < data.length; j++) {
+                if (data[j] < min) min = data[j];
+                if (data[j] > max) max = data[j];
+            }
+            this.channels[i].physicalMin = min;
+            this.channels[i].physicalMax = max;
         }
 
         if (this.showBipolar && this.bipolarChannels) {
@@ -1805,6 +1817,8 @@ class App {
     }
 
     _notchFilter(data, freq, sfreq) {
+        // 奈奎斯特频率保护：陷波频率不能超过 sfreq/2
+        if (freq >= sfreq / 2) return new Float32Array(data);
         const Q = 30;
         const w0 = 2 * Math.PI * freq / sfreq;
         const alpha = Math.sin(w0) / (2 * Q);
@@ -1816,12 +1830,25 @@ class App {
         const a1 = -2 * Math.cos(w0);
         const a2 = 1 - alpha;
 
-        const out = new Float32Array(data.length);
+        // 正向滤波
+        const fwd = new Float32Array(data.length);
         let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-
         for (let i = 0; i < data.length; i++) {
             const x0 = data[i];
-            const y0 = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+            const y0 = (b0 * x0 + b1 * x1 + b2 * x2
+                - a1 * y1 - a2 * y2) / a0;
+            fwd[i] = y0;
+            x2 = x1; x1 = x0;
+            y2 = y1; y1 = y0;
+        }
+
+        // 反向滤波（零相位）
+        const out = new Float32Array(data.length);
+        x1 = 0; x2 = 0; y1 = 0; y2 = 0;
+        for (let i = data.length - 1; i >= 0; i--) {
+            const x0 = fwd[i];
+            const y0 = (b0 * x0 + b1 * x1 + b2 * x2
+                - a1 * y1 - a2 * y2) / a0;
             out[i] = y0;
             x2 = x1; x1 = x0;
             y2 = y1; y1 = y0;
@@ -1830,27 +1857,74 @@ class App {
     }
 
     _highpassFilter(data, cutoff, sfreq) {
-        const RC = 1 / (2 * Math.PI * cutoff);
-        const dt = 1 / sfreq;
-        const alpha = RC / (RC + dt);
-
-        const out = new Float32Array(data.length);
-        out[0] = data[0];
-        for (let i = 1; i < data.length; i++) {
-            out[i] = alpha * (out[i - 1] + data[i] - data[i - 1]);
-        }
-        return out;
+        // 奈奎斯特频率保护：截止频率不能超过 sfreq/2
+        if (cutoff >= sfreq / 2) return new Float32Array(data);
+        // 二阶 Butterworth 高通滤波器（正向+反向滤波，零相位）
+        const coeffs = this._butterworthHighpass(cutoff, sfreq);
+        let filtered = this._applyIIR(data, coeffs.b, coeffs.a);
+        // 反向滤波消除相位偏移
+        filtered = this._applyIIR(
+            filtered.slice().reverse(), coeffs.b, coeffs.a
+        );
+        filtered.reverse();
+        return filtered;
     }
 
     _lowpassFilter(data, cutoff, sfreq) {
-        const RC = 1 / (2 * Math.PI * cutoff);
-        const dt = 1 / sfreq;
-        const alpha = dt / (RC + dt);
+        // 奈奎斯特频率保护：截止频率不能超过 sfreq/2
+        if (cutoff >= sfreq / 2) return new Float32Array(data);
+        // 二阶 Butterworth 低通滤波器（正向+反向滤波，零相位）
+        const coeffs = this._butterworthLowpass(cutoff, sfreq);
+        let filtered = this._applyIIR(data, coeffs.b, coeffs.a);
+        // 反向滤波消除相位偏移
+        filtered = this._applyIIR(
+            filtered.slice().reverse(), coeffs.b, coeffs.a
+        );
+        filtered.reverse();
+        return filtered;
+    }
 
+    // 二阶 Butterworth 低通滤波器系数
+    _butterworthLowpass(cutoff, sfreq) {
+        const omega = 2 * Math.PI * cutoff / sfreq;
+        const K = Math.tan(omega / 2);
+        const K2 = K * K;
+        const norm = 1 + Math.SQRT2 * K + K2;
+
+        const b0 = K2 / norm;
+        const b1 = 2 * b0;
+        const b2 = b0;
+        const a0 = 1;
+        const a1 = 2 * (K2 - 1) / norm;
+        const a2 = (1 - Math.SQRT2 * K + K2) / norm;
+
+        return { b: [b0, b1, b2], a: [a0, a1, a2] };
+    }
+
+    // 二阶 Butterworth 高通滤波器系数
+    _butterworthHighpass(cutoff, sfreq) {
+        const K = Math.tan(Math.PI * cutoff / sfreq);
+        const K2 = K * K;
+        const norm = 1 + Math.SQRT2 * K + K2;
+
+        const b0 = 1 / norm;
+        const b1 = -2 / norm;
+        const b2 = 1 / norm;
+        const a0 = 1;
+        const a1 = 2 * (K2 - 1) / norm;
+        const a2 = (1 - Math.SQRT2 * K + K2) / norm;
+
+        return { b: [b0, b1, b2], a: [a0, a1, a2] };
+    }
+
+    // 通用 IIR 滤波器（Direct Form I，假设 a[0]=1）
+    _applyIIR(data, b, a) {
         const out = new Float32Array(data.length);
-        out[0] = data[0] * alpha;
-        for (let i = 1; i < data.length; i++) {
-            out[i] = out[i - 1] + alpha * (data[i] - out[i - 1]);
+        for (let i = 0; i < data.length; i++) {
+            let y = b[0] * data[i];
+            if (i >= 1) y += b[1] * data[i - 1] - a[1] * out[i - 1];
+            if (i >= 2) y += b[2] * data[i - 2] - a[2] * out[i - 2];
+            out[i] = y;
         }
         return out;
     }

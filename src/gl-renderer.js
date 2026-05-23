@@ -369,6 +369,7 @@ class GLRenderer {
         this.totalDuration = totalDuration;
         this.channelVBOs = [];
         this.channelSampleCounts = [];
+        this.channelSfreqs = [];
 
         for (const ch of channels) {
             const normalized = this._normalizeChannel(ch);
@@ -377,6 +378,7 @@ class GLRenderer {
             gl.bufferData(gl.ARRAY_BUFFER, normalized, gl.STATIC_DRAW);
             this.channelVBOs.push(vbo);
             this.channelSampleCounts.push(normalized.length);
+            this.channelSfreqs.push(ch.sfreq || sfreq);
         }
 
         this.viewportStart = 0;
@@ -697,7 +699,8 @@ class GLRenderer {
         if (channelIndex < 0 || channelIndex >= channelCount) return null;
 
         const time = this.viewportStart + x * (this.viewportEnd - this.viewportStart);
-        const sampleIndex = Math.round(time * this.sfreq);
+        const chSfreq = this.channelSfreqs[channelIndex] || this.sfreq;
+        const sampleIndex = Math.round(time * chSfreq);
         const totalSamples = this.channelSampleCounts[channelIndex] || 0;
         if (sampleIndex < 0 || sampleIndex >= totalSamples) {
             return {
@@ -866,7 +869,6 @@ class GLRenderer {
         gl.useProgram(this.waveProgram);
         gl.uniform2f(this.uViewportRange, this.viewportStart, this.viewportEnd);
         gl.uniform1f(this.uChannelCount, channelCount);
-        gl.uniform1f(this.uSfreq, this.sfreq);
         gl.uniform1f(this.uSensitivity, this.sensitivity);
 
         if (this.fixedHeightMode) {
@@ -884,7 +886,6 @@ class GLRenderer {
 
         const pixelWidth = this.canvas.width;
         const range = this.viewportEnd - this.viewportStart;
-        const samplesPerPixel = range * this.sfreq / pixelWidth;
 
         const colors = [
             [0.4, 0.85, 1.0],
@@ -898,6 +899,8 @@ class GLRenderer {
         ];
 
         for (let i = 0; i < channelCount; i++) {
+            const chSfreq = this.channelSfreqs[i];
+            gl.uniform1f(this.uSfreq, chSfreq);
             gl.uniform1f(this.uChannelIndex, i);
 
             const isSelected = this.channels[i].name === this.selectedChannel;
@@ -912,13 +915,15 @@ class GLRenderer {
             const vbo = this.channelVBOs[i];
             const totalSamples = this.channelSampleCounts[i];
 
-            const startSample = Math.max(0, Math.floor(this.viewportStart * this.sfreq));
-            const endSample = Math.min(totalSamples, Math.ceil(this.viewportEnd * this.sfreq));
+            const startSample = Math.max(0, Math.floor(this.viewportStart * chSfreq));
+            const endSample = Math.min(totalSamples, Math.ceil(this.viewportEnd * chSfreq));
             const sampleCount = endSample - startSample;
 
             if (sampleCount <= 0) continue;
 
-            gl.uniform1f(this.uTimeOffset, startSample / this.sfreq);
+            gl.uniform1f(this.uTimeOffset, startSample / chSfreq);
+
+            const samplesPerPixel = range * chSfreq / pixelWidth;
 
             const vao = gl.createVertexArray();
             gl.bindVertexArray(vao);

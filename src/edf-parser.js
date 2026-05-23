@@ -20,10 +20,18 @@ class EDFParser {
         const signals = EDFParser._parseSignalsHeader(
             view, 256, header.numSignals
         );
+        // 检测 BDF 格式（版本标识首字节为 0xFF）
+        const isBdf = view.getUint8(0) === 0xFF;
+        const bytesPerSample = isBdf ? 3 : 2;
+
+        // BDF 在信号 header 之后有 256 字节 reserved 区域
+        const bdfReservedSize = isBdf ? 256 : 0;
         const dataOffset = header.numBytesInHeader ||
-            (256 + header.numSignals * 256);
+            (256 + header.numSignals * 256 + bdfReservedSize);
+
         const channelData = EDFParser._parseDataRecords(
-            view, dataOffset, header, signals, arrayBuffer
+            view, dataOffset, header, signals, arrayBuffer,
+            isBdf, bytesPerSample
         );
 
         return {
@@ -162,9 +170,9 @@ class EDFParser {
         return signals;
     }
 
-    static _parseDataRecords(view, offset, header, signals, arrayBuffer) {
+    static _parseDataRecords(view, offset, header, signals,
+                            arrayBuffer, isBdf, bytesPerSample) {
         const channels = [];
-        const bytesPerSample = 2;
         let totalSamplesPerRecord = 0;
         for (let s = 0; s < signals.length; s++) {
             totalSamplesPerRecord += signals[s].samplesPerRecord;
@@ -222,7 +230,19 @@ class EDFParser {
 
                 for (let s = 0; s < sig.samplesPerRecord; s++) {
                     const bytePos = recordStart + s * bytesPerSample;
-                    const raw = view.getInt16(bytePos, true);
+                    let raw;
+                    if (isBdf) {
+                        // BDF: 24位有符号小端序
+                        const b0 = view.getUint8(bytePos);
+                        const b1 = view.getUint8(bytePos + 1);
+                        const b2 = view.getUint8(bytePos + 2);
+                        raw = b0 | (b1 << 8) | (b2 << 16);
+                        // 符号扩展：如果第23位为1，则为负数
+                        if (raw & 0x800000) raw |= ~0xFFFFFF;
+                    } else {
+                        // EDF: 16位有符号小端序
+                        raw = view.getInt16(bytePos, true);
+                    }
                     data[sampleIndex++] = raw * scale + offsetVal;
                 }
             }
@@ -325,8 +345,11 @@ class EDFParser {
                 const ch2 = parsed[i + 1].channel;
                 const len = Math.min(ch1.data.length, ch2.data.length);
                 const data = new Float32Array(len);
+                let dMin = Infinity, dMax = -Infinity;
                 for (let j = 0; j < len; j++) {
                     data[j] = ch1.data[j] - ch2.data[j];
+                    if (data[j] < dMin) dMin = data[j];
+                    if (data[j] > dMax) dMax = data[j];
                 }
 
                 bipolar.push({
@@ -334,8 +357,8 @@ class EDFParser {
                     name: `${ch1.name} & ${ch2.name}`,
                     data: data,
                     sfreq: ch1.sfreq,
-                    physicalMin: ch1.physicalMin - ch2.physicalMax,
-                    physicalMax: ch1.physicalMax - ch2.physicalMin,
+                    physicalMin: dMin,
+                    physicalMax: dMax,
                     type: 'bipolar',
                     ch1: ch1.name,
                     ch2: ch2.name,
